@@ -1,0 +1,44 @@
+version: "3"
+services:
+  mongodb:
+    image: mongo
+    container_name: "mongodb"
+    command: [--auth]
+    volumes:
+      - ./data/mongo-user:/docker-entrypoint-initdb.d:z
+    environment:
+      - MONGO_INITDB_ROOT_USERNAME=cteadmin
+      - MONGO_INITDB_ROOT_PASSWORD=cteadmin
+    restart: on-failure:5
+    ports:
+      - 27017:27017
+  core:
+    image: netskopetechnicalalliances/cloud_exchange:core-beta
+    container_name: "core"
+    volumes:
+      - ./data/custom_plugins:/opt/netskope/integrations/cte/custom_plugins:z
+    environment:
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USER=cteadmin
+      - MONGO_PASSWORD=cteadmin
+      - RABBITMQ_HOST=localhost
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASSWORD=guest
+      - JWT_SECRET=secret
+      - JWT_ALGORITHM=HS256
+    restart: on-failure:5
+    ports:
+      - 15672:15672 # for rabbitmq management plugin
+    links:
+      - mongodb
+  ui:
+    image: netskopetechnicalalliances/cloud_exchange:ui-beta
+    container_name: "ui"
+    restart: on-failure:5
+    volumes:
+      - ./data/ssl_certs:/tmp/ssl_certs:z
+    ports:
+      - 443:3000
+    links:
+      - core
