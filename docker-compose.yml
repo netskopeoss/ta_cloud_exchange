@@ -14,7 +14,7 @@ services:
     ports:
       - 27017:27017
   core:
-    image: cnetskopetechnicalalliances/cloud_exchange:core-latest
+    image: netskopetechnicalalliances/cloud_exchange:core-latest
     container_name: "core"
     volumes:
       - ./data/custom_plugins:/opt/netskope/integrations/cte/custom_plugins:z
