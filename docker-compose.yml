@@ -14,7 +14,7 @@ services:
     ports:
       - 27017:27017
   core:
-    image: crestsystems/netskope:core-latest
+    image: cnetskopetechnicalalliances/cloud_exchange:core-latest
     container_name: "core"
     volumes:
       - ./data/custom_plugins:/opt/netskope/integrations/cte/custom_plugins:z
@@ -34,7 +34,7 @@ services:
     links:
       - mongodb
   ui:
-    image: crestsystems/netskope:ui-latest
+    image: netskopetechnicalalliances/cloud_exchange:ui-latest
     container_name: "ui"
     restart: on-failure:5
     volumes:
