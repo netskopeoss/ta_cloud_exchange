@@ -1,7 +1,8 @@
 #!/bin/bash
 
 set -e
-MONGO_DIR="./data/mongo-data"
+MOUNT_PATH=`grep "/data/db:z" docker-compose.yml`
+MONGO_DIR=`docker exec -ti core python -c 'import sys; print(sys.argv[1].strip().split(":")[0][1:].strip(), end="")' "${MOUNT_PATH}"`
 
 if [ ! -d "$MONGO_DIR" ]; then
     echo "Stopping running containers"
@@ -18,7 +19,12 @@ if [ ! -d "$MONGO_DIR" ]; then
     docker cp database-migrate.py core:/opt
     docker exec -ti core python /opt/database-migrate.py
 else
-    echo "$MONGO_DIR already exists"
-    echo "Make sure it does not contain any data, delete it and run the script again"
+    echo "$MONGO_DIR already exists; updating core and ui containers"
+    echo "Stopping running containers"
+    docker stop core ui
+    echo "Removing previous containers"
+    docker rm -f core ui
+    docker-compose pull core ui
+    docker-compose up -d
+    echo "Containers updated successfully"
 fi
-
