@@ -47,6 +47,18 @@ db.schedules.insert({
     },
 })
 
+db.schedules.insert({
+    _cls: "PeriodicTask",
+    name: "INTERNAL UPDATE TASK",
+    enabled: true,
+    args: [],
+    task: "common.check_updates",
+    interval: {
+        every: 12,
+        period: "hours",
+    },
+})
+
 db.settings.insert({
     proxy: {
         scheme: "http",
@@ -55,7 +67,7 @@ db.settings.insert({
         password: ""
     },
     logLevel: "info",
-    databaseVersion: "1.3.0",
+    databaseVersion: "2.0.0",
     alertCleanup: 7,
     platforms: {
         cte: false,

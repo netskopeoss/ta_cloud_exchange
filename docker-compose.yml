@@ -1,7 +1,7 @@
 version: "3"
 services:
   mongodb:
-    image: mongo
+    image: mongo:4.4.3
     container_name: "mongodb"
     command: [--auth]
     volumes:
@@ -14,11 +14,13 @@ services:
     ports:
       - 27017:27017
   core:
-    image: netskopetechnicalalliances/cloud_exchange:core-latest
+    image: index.docker.io/netskopetechnicalalliances/cloudexchange:core-latest
     container_name: "core"
     volumes:
-      - ./data/custom_plugins:/opt/netskope/integrations/cte/custom_plugins:z
+      - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
+      - PLUGIN_TIMEOUT_MINUTES=120
       - MONGO_HOST=mongodb
       - MONGO_PORT=27017
       - MONGO_USER=cteadmin
@@ -28,13 +30,19 @@ services:
       - RABBITMQ_PASSWORD=guest
       - JWT_SECRET=secret
       - JWT_ALGORITHM=HS256
+      # - DOCKER_USERNAME=DOCKER_USERNAME
+      # - DOCKER_PASSWORD=DOCKER_PASSWORD
+      - WATCHTOWER_HTTP_API_TOKEN=token
     restart: on-failure:5
     ports:
       - 15672:15672 # for rabbitmq management plugin
     links:
       - mongodb
+      - watchtower
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
   ui:
-    image: netskopetechnicalalliances/cloud_exchange:ui-latest
+    image: index.docker.io/netskopetechnicalalliances/cloudexchange:ui-latest
     container_name: "ui"
     restart: on-failure:5
     volumes:
@@ -43,3 +51,18 @@ services:
       - 443:3000
     links:
       - core
+    labels:
+      - com.centurylinklabs.watchtower.enable=true
+  watchtower:
+    image: containrrr/watchtower:1.0.3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # - /root/.docker/config.json:/config.json  # uncomment this line if repo requires authentication
+    environment:
+      - WATCHTOWER_HTTP_API=true
+      - WATCHTOWER_HTTP_API_TOKEN=token
+      - WATCHTOWER_LABEL_ENABLE=true
+      - WATCHTOWER_CLEANUP=true
+    ports:
+      - 8080:8080
+    command: --interval 30
