@@ -1,2 +1,2 @@
-# Netskope CTE Docker Compose
+# Netskope Cloud Exchange Compose
 
