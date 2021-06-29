@@ -2,6 +2,10 @@ version: "3"
 services:
   mongodb:
     image: mongo:4.4.3
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
     container_name: "mongodb"
     command: [--auth]
     volumes:
@@ -15,6 +19,10 @@ services:
       - 27017:27017
   core:
     image: index.docker.io/netskopetechnicalalliances/cloudexchange:core-latest
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"    
     container_name: "core"
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
@@ -43,6 +51,10 @@ services:
       - com.centurylinklabs.watchtower.enable=true
   ui:
     image: index.docker.io/netskopetechnicalalliances/cloudexchange:ui-latest
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
     container_name: "ui"
     restart: on-failure:5
     volumes:
@@ -55,6 +67,10 @@ services:
       - com.centurylinklabs.watchtower.enable=true
   watchtower:
     image: containrrr/watchtower:1.0.3
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     # - /root/.docker/config.json:/config.json  # uncomment this line if repo requires authentication
