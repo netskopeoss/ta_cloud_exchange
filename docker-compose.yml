@@ -1,62 +1,56 @@
-version: "3"
+version: "3.3"
 services:
-  mongodb:
-    image: mongo:4.4.3
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
-    container_name: "mongodb"
-    command: [--auth]
-    volumes:
-      - ./data/mongo-user:/docker-entrypoint-initdb.d:z
-      - ./data/mongo-data:/data/db:z
+  rabbitmq-stats:
+    image: docker.io/bitnami/rabbitmq:3.8
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=cteadmin
-      - MONGO_INITDB_ROOT_PASSWORD=cteadmin
-    restart: on-failure:5
+      - RABBITMQ_NODE_TYPE=stats
+      - RABBITMQ_NODE_NAME=rabbit@rabbitmq-stats
+      - RABBITMQ_ERL_COOKIE=s3cr3tc00ki3
+      - RABBITMQ_SECURE_PASSWORD=yes
+    volumes:
+      - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
     ports:
-      - 27017:27017
+      - '15672:15672'
+      - '5672:5672'
+  mongodb-primary:
+    image: docker.io/bitnami/mongodb:4.4
+    volumes:
+      - ./data/mongo-data:/bitnami/mongodb:z
+    environment:
+      - MONGODB_ADVERTISED_HOSTNAME=mongodb-primary
+      - MONGODB_ROOT_PASSWORD=password123
+      - MONGODB_USERNAME=cteadmin
+      - MONGODB_PASSWORD=cteadmin
+      - MONGODB_DATABASE=cte
+    ports:
+      - '27017:27017'
   core:
-    image: index.docker.io/netskopetechnicalalliances/cloudexchange:core-latest
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"    
-    container_name: "core"
+    image: docker.io/netskopetechnicalalliances/cloudexchange:core3-latest
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - PLUGIN_TIMEOUT_MINUTES=120
-      - MONGO_HOST=mongodb
-      - MONGO_PORT=27017
-      - MONGO_USER=cteadmin
-      - MONGO_PASSWORD=cteadmin
-      - RABBITMQ_HOST=localhost
-      - RABBITMQ_USER=guest
-      - RABBITMQ_PASSWORD=guest
+      - MONGO_CONNECTION_STRING=mongodb://cteadmin:cteadmin@mongodb-primary:27017/cte
+      - RABBITMQ_CONNECTION_STRING=amqp://user:bitnami@rabbitmq-stats
       - JWT_SECRET=secret
       - JWT_ALGORITHM=HS256
-      # - DOCKER_USERNAME=DOCKER_USERNAME
-      # - DOCKER_PASSWORD=DOCKER_PASSWORD
+      - ENABLE_CELERY_BEAT=true
+      #- DOCKER_USERNAME=DOCKER_USERNAME # uncomment this line if you have a private repo
+      #- DOCKER_PASSWORD=DOCKER_PASSWORD # uncomment this line if you have a private repo
       - WATCHTOWER_HTTP_API_TOKEN=token
+      - ANALYTICS_BASE_URL=https://reporting.netskope.tech
+      - ANALYTICS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOiJjMDAyIn0.w8SVrTcDjk8PkR4IcbWGwOyf6-OWfCUyOoCTgZvqHqc
     restart: on-failure:5
-    ports:
-      - 15672:15672 # for rabbitmq management plugin
-    links:
-      - mongodb
-      - watchtower
+    depends_on:
+      - mongodb-primary
+      - rabbitmq-stats
     labels:
       - com.centurylinklabs.watchtower.enable=true
   ui:
-    image: index.docker.io/netskopetechnicalalliances/cloudexchange:ui-latest
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
-    container_name: "ui"
+    image: docker.io/netskopetechnicalalliances/cloudexchange:ui3-latest
     restart: on-failure:5
+    environment:
+      - CE_API_URL=http://core
     volumes:
       - ./data/ssl_certs:/tmp/ssl_certs:z
     ports:
@@ -67,18 +61,13 @@ services:
       - com.centurylinklabs.watchtower.enable=true
   watchtower:
     image: containrrr/watchtower:1.0.3
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "3"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-    # - /root/.docker/config.json:/config.json  # uncomment this line if repo requires authentication
+      # - /root/.docker/config.json:/config.json  # uncomment this line if repo requires authentication
     environment:
       - WATCHTOWER_HTTP_API=true
       - WATCHTOWER_HTTP_API_TOKEN=token
       - WATCHTOWER_LABEL_ENABLE=true
-      - WATCHTOWER_CLEANUP=true
     ports:
       - 8080:8080
-    command: --interval 30
+    command: --interval 30 {"mode":"full","isActive":false}
