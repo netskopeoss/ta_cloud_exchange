@@ -24,6 +24,7 @@ Upgrade Instructions from Cloud Exchange 2 to Cloud Exchange 3
 
 	6: Set Database Permissions
 		sudo chown -R 1001:1001 data/mongo-data
+		sudo chmod 775 data/custom_plugins
 
 	7: Copy Data from Cloud Exchange 2 to Cloud Exchange 3
 		sudo cp -R ta_cloud_exchange_2_backup/data/mongo-data/* data/mongo-data/data/db/
