@@ -14,11 +14,11 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	a. `mkdir netskope`<br>
 	b. `cd netsokpe`<br>
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br>   
- 2. Set directory permissions
-	a. `cd ta_cloud_exchange`. 
-	b.`sudo chown -R 1001:1001 data/mongo-data`. 
-	c. `chmod 775 data/custom_plugins`. 
- 3. (Recommended / Optional): enable ssl / https
+ 2. Set directory permissions<br>
+	a. `cd ta_cloud_exchange`<br> 
+	b.`sudo chown -R 1001:1001 data/mongo-data`<br> 
+	c. `chmod 775 data/custom_plugins`<br>
+ 3. (Recommended / Optional): enable ssl / https<br>
 	a. edit docker-compose.yml file to change the following:
 	 ```
 	 ui:
