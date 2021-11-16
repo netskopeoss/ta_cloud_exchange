@@ -51,6 +51,7 @@ If bad gateway is received when you try to login:
 4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep 10 14:49 ssl_certs
 ```
 Note the mask on line with custom_plugins - mask should be 775
+
 Note ownership of mongo-data - should represent 1001:1001
 
  
