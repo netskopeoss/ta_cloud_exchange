@@ -11,13 +11,13 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  ## Install Procedure
  
  1. Clone repository to volume with requisite 20 GB of storage
-	a. `mkdir netskope`
-	b. `cd netsokpe`
-	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`
+	a. `mkdir netskope`  
+	b. `cd netsokpe`. 
+	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`. 
  2. Set directory permissions
-	a. `cd ta_cloud_exchange`
-	b.`sudo chown -R 1001:1001 data/mongo-data`
-	c. `chmod 775 data/custom_plugins`
+	a. `cd ta_cloud_exchange`. 
+	b.`sudo chown -R 1001:1001 data/mongo-data`. 
+	c. `chmod 775 data/custom_plugins`. 
  3. (Recommended / Optional): enable ssl / https
 	a. edit docker-compose.yml file to change the following:
 	 ```
@@ -50,8 +50,7 @@ If bad gateway is received when you try to login:
 4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep  9 08:53 rabbitmq
 4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep 10 14:49 ssl_certs
 ```
-Note the mask on line with custom_plugins - mask should be 775
-
+Note the mask on line with custom_plugins - mask should be 775. 
 Note ownership of mongo-data - should represent 1001:1001
 
  
