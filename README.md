@@ -12,8 +12,8 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  
  1. Clone repository to volume with requisite 20 GB of storage
 	a. `mkdir netskope`  
-	b. `cd netsokpe`. 
-	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`. 
+	b. `cd netsokpe`.   
+	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`.   
  2. Set directory permissions
 	a. `cd ta_cloud_exchange`. 
 	b.`sudo chown -R 1001:1001 data/mongo-data`. 
