@@ -11,15 +11,15 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  ## Install Procedure
  
  1. Clone repository to volume with requisite 20 GB of storage
-	 a. `mkdir netskope`
-	 b. `cd netsokpe`
-	 c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`
+	a. `mkdir netskope`
+	b. `cd netsokpe`
+	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`
  2. Set directory permissions
-	 a. `cd ta_cloud_exchange`
-	 b.`sudo chown -R 1001:1001 data/mongo-data`
-	 c. `chmod 775 data/custom_plugins`
+	a. `cd ta_cloud_exchange`
+	b.`sudo chown -R 1001:1001 data/mongo-data`
+	c. `chmod 775 data/custom_plugins`
  3. (Recommended / Optional): enable ssl / https
-	 a. edit docker-compose.yml file to change the following:
+	a. edit docker-compose.yml file to change the following:
 	 ```
 	 ui:
 	   ports:
@@ -34,7 +34,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	b. create self signed certificate - or use personal certificates
 	`openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj '/CN=localhost'`
  4. Launch Cloud Exchange 3
- a. `sudo docker-compose up -d`
+ 	a. `sudo docker-compose up -d`
  5. Open Browser to `http(s)://<host ip address>`
 	 
 
