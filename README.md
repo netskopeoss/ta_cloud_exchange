@@ -22,14 +22,14 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	 a. edit docker-compose.yml file to change the following:
 	 ```
 	 ui:
-		 ports:
-			 - 80:3000
+	   ports:
+	     - 80:3000
 	```
 	to
 	```
 	ui: 
-		ports:
-			- 443:3000
+	  ports:
+	   - 443:3000
 	```
 	b. create self signed certificate - or use personal certificates
 	`openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj '/CN=localhost'`
