@@ -29,7 +29,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	```
 	ui: 
 	  ports:
-	   - 443:3000
+	    - 443:3000
 	```
 	b. create self signed certificate - or use personal certificates
 	`openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj '/CN=localhost'`
