@@ -7,6 +7,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - 2 vCPU
  - 4 GB of Memory
  - 20 GB of storage
+ - Please see full documentation for scale numbers.
 
  ## Install Procedure
  
