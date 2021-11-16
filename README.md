@@ -4,9 +4,10 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 
 
  - Linux System capable of supporting docker.io release of docker, and docker-compose
- - 2 vCPU
- - 4 GB of Memory
- - 20 GB of storage
+ - Miniumum Requirements Below:
+ 	- 2 vCPU
+ 	- 4 GB of Memory
+	- 20 GB of storage
  - Please see full documentation for scale numbers.
 
  ## Install Procedure
