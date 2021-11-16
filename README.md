@@ -31,11 +31,11 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	  ports:
 	    - 443:3000
 	```
-	b. create self signed certificate - or use personal certificates
+	b. create self signed certificate - or use personal certificates<br>
 	`openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj '/CN=localhost'`
- 4. Launch Cloud Exchange 3
- 	a. `sudo docker-compose up -d`
- 5. Open Browser to `http(s)://<host ip address>`
+ 4. Launch Cloud Exchange 3<br>
+ 	a. `sudo docker-compose up -d`<br>
+ 5. Open Browser to `http(s)://<host ip address>`<br>
 	 
 
  ## Troubleshooting
@@ -50,7 +50,7 @@ If bad gateway is received when you try to login:
 4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep  9 08:53 rabbitmq
 4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep 10 14:49 ssl_certs
 ```
-Note the mask on line with custom_plugins - mask should be 775. 
+Note the mask on line with custom_plugins - mask should be 775<br> 
 Note ownership of mongo-data - should represent 1001:1001
 
  
