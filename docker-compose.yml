@@ -7,6 +7,7 @@ services:
       - RABBITMQ_NODE_NAME=rabbit@rabbitmq-stats
       - RABBITMQ_ERL_COOKIE=s3cr3tc00ki3
       - RABBITMQ_SECURE_PASSWORD=yes
+    restart: on-failure:5
     volumes:
       - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
     ports:
@@ -22,6 +23,7 @@ services:
       - MONGODB_USERNAME=cteadmin
       - MONGODB_PASSWORD=cteadmin
       - MONGODB_DATABASE=cte
+    restart: on-failure:5
     ports:
       - '27017:27017'
   core:
@@ -68,6 +70,7 @@ services:
       - WATCHTOWER_HTTP_API=true
       - WATCHTOWER_HTTP_API_TOKEN=token
       - WATCHTOWER_LABEL_ENABLE=true
+    restart: on-failure:5
     ports:
       - 8080:8080
     command: --interval 30 {"mode":"full","isActive":false}
