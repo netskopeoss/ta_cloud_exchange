@@ -43,7 +43,7 @@ services:
       - WATCHTOWER_HTTP_API_TOKEN=token
       - ANALYTICS_BASE_URL=https://reporting.netskope.tech
       - ANALYTICS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOiJjMDAyIn0.w8SVrTcDjk8PkR4IcbWGwOyf6-OWfCUyOoCTgZvqHqc
-      - MOCK_URL=http://10.0.9.93:8888
+      #- MOCK_URL=http://10.0.9.93:8888
       #- MAX_MAINTENANCE_WINDOW_MINUTES=15
       #- PULL_THREADS=6
       #- MAX_WAIT_ON_LOCK_IN_MINUTES=240
