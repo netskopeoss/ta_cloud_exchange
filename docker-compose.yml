@@ -14,6 +14,10 @@ services:
     ports:
       - '15672:15672'
       - '5672:5672'
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
   mongodb-primary:
     image: index.docker.io/bitnami/mongodb:4.4
     volumes:
@@ -27,6 +31,10 @@ services:
     restart: on-failure:5
     ports:
       - '27017:27017'
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
   core:
     image: index.docker.io/netskopetechnicalalliances/cloudexchange:core3-latest
     volumes:
@@ -70,6 +78,10 @@ services:
       - core
     labels:
       - com.centurylinklabs.watchtower.enable=true
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
   watchtower:
     image: index.docker.io/containrrr/watchtower:1.3.0
     volumes:
@@ -83,3 +95,7 @@ services:
     ports:
       - 8080:8080
     command: --http-api-update
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "5"
