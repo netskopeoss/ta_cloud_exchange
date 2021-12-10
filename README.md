@@ -36,7 +36,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	b. create self signed certificate - or use personal certificates<br>
 	`openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj '/CN=localhost'`
  4. Launch Cloud Exchange 3<br>
- 	a. `sudo docker-compose up -d`<br>
+ 	a. `sudo docker-compose --compatibility up -d`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
 	 
 
