@@ -36,7 +36,7 @@ services:
         max-size: "10m"
         max-file: "5"
   core:
-    image: index.docker.io/netskopetechnicalalliances/cloudexchange:core3-latest
+    image: index.docker.io/crestsystems/cloudexchange:core-3.1.5-beta
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - /var/run/docker.sock:/var/run/docker.sock
@@ -62,7 +62,7 @@ services:
     labels:
       - com.centurylinklabs.watchtower.enable=true
   ui:
-    image: index.docker.io/netskopetechnicalalliances/cloudexchange:ui3-latest
+    image: index.docker.io/crestsystems/cloudexchange:ui-3.1.5-beta
     restart: on-failure:5
     environment:
       - CE_API_URL=http://core
