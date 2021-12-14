@@ -14,6 +14,10 @@ services:
     ports:
       - '15672:15672'
       - '5672:5672'
+    deploy:
+      resources:
+        limits:
+          memory: 2G
     logging:
       options:
         max-size: "10m"
