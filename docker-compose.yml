@@ -18,6 +18,10 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: 2G
   mongodb-primary:
     image: index.docker.io/bitnami/mongodb:4.4
     volumes:
