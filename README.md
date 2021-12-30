@@ -14,7 +14,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  
  1. Clone repository to volume with requisite 20 GB of storage<br>
 	a. `mkdir netskope`<br>
-	b. `cd netsokpe`<br>
+	b. `cd netskope`<br>
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br>   
  2. Set directory permissions<br>
 	a. `cd ta_cloud_exchange`<br> 
