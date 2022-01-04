@@ -72,8 +72,8 @@ DEFAULT_INPUTS = {
 
 AVAILABLE_INPUTS = {}
 
-CORE_DEFAULT = "crestsystems/cloudexchange:core-latest"
-UI_DEFAULT = "crestsystems/cloudexchange:ui-latest"
+CORE_DEFAULT = "crestsystems/netskope:core-latest"
+UI_DEFAULT = "crestsystems/netskope:ui-latest"
 CORE_BETA_DEFAULT = "crestsystems/cloudexchange:core-latest-beta"
 UI_BETA_DEFAULT = "crestsystems/cloudexchange:ui-latest-beta"
 
@@ -204,7 +204,7 @@ def run():
 
     except KeyboardInterrupt as e:
         put_env_variable(AVAILABLE_INPUTS)
-        print("\nSetup Completed !!!\n")
+        print("\nSetup completed successfull...\n")
     except Exception as e:
         print(e)
 
