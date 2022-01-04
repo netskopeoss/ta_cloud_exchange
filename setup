@@ -178,9 +178,9 @@ def run():
                 if item['help']:
                     print(item['help'])
                 if key not in AVAILABLE_INPUTS:
-                    data = input(f"Enter {key} (Default: \"{item['default']}\"): ")
+                    data = input(f"> Enter {key} (Default: \"{item['default']}\"): ")
                 else:
-                    data = input(f"Enter {key} (Current: \"{AVAILABLE_INPUTS[key]}\"): ")
+                    data = input(f"> Enter {key} (Current: \"{AVAILABLE_INPUTS[key]}\"): ")
                 print("")
             data = data.strip() if isinstance(data, str) else data
             if not data:
@@ -200,7 +200,7 @@ def run():
 
         put_env_variable(AVAILABLE_INPUTS)
         
-        print("\nSetup Completed Successfully !!!\nPlease Run start.sh file to start services. !!!\n")
+        print("\nSetup completed successfully...\n\nExecute this command to start CE:\n  > sudo ./start")
 
     except KeyboardInterrupt as e:
         put_env_variable(AVAILABLE_INPUTS)
