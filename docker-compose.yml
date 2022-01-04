@@ -29,8 +29,8 @@ services:
     environment:
       - MONGODB_ADVERTISED_HOSTNAME=mongodb-primary
       - MONGODB_ROOT_PASSWORD=password123
-      - MONGODB_USERNAME=cteadmin
-      - MONGODB_PASSWORD=cteadmin
+      - MONGODB_USERNAME=${MONGODB_USERNAME}
+      - MONGODB_PASSWORD=${MONGODB_PASSWORD}
       - MONGODB_DATABASE=cte
     restart: on-failure:5
     ports:
@@ -40,21 +40,24 @@ services:
         max-size: "10m"
         max-file: "5"
   core:
-    image: index.docker.io/netskopetechnicalalliances/cloudexchange:core3-latest
+    image: index.docker.io/${CORE_TAG}
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
-      - MONGO_CONNECTION_STRING=mongodb://cteadmin:cteadmin@mongodb-primary:27017/cte
+      - MONGO_CONNECTION_STRING=mongodb://${MONGODB_USERNAME}:${MONGODB_PASSWORD}@mongodb-primary:27017/cte
       - RABBITMQ_CONNECTION_STRING=amqp://user:bitnami@rabbitmq-stats
-      - JWT_SECRET=secret
+      - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ENABLE_CELERY_BEAT=true
-      #- DOCKER_USERNAME=DOCKER_USERNAME # uncomment this line if you have a private repo
-      #- DOCKER_PASSWORD=DOCKER_PASSWORD # uncomment this line if you have a private repo
-      - WATCHTOWER_HTTP_API_TOKEN=token
+      #- DOCKER_USERNAME=${DOCKER_USERNAME}
+      #- DOCKER_PASSWORD=${DOCKER_PASSWORD}
+      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - ANALYTICS_BASE_URL=https://reporting.netskope.tech
       - ANALYTICS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOiJjMDAyIn0.w8SVrTcDjk8PkR4IcbWGwOyf6-OWfCUyOoCTgZvqHqc
+      - MAX_MAINTENANCE_WINDOW_MINUTES=${MAX_MAINTENANCE_WINDOW_MINUTES}
+      - PULL_THREADS=${PULL_THREADS}
+      - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
     restart: on-failure:5
     logging:
       options:
@@ -66,14 +69,14 @@ services:
     labels:
       - com.centurylinklabs.watchtower.enable=true
   ui:
-    image: index.docker.io/netskopetechnicalalliances/cloudexchange:ui3-latest
+    image: index.docker.io/${UI_TAG}
     restart: on-failure:5
     environment:
       - CE_API_URL=http://core
     volumes:
       - ./data/ssl_certs:/tmp/ssl_certs:z
     ports:
-      - 80:3000
+      - ${UI_PORT}:3000
     links:
       - core
     labels:
@@ -86,10 +89,10 @@ services:
     image: index.docker.io/containrrr/watchtower:1.3.0
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # - /root/.docker/config.json:/config.json # uncomment this line if repo requires authentication
+      # - /root/.docker/config.json:/config.json
     environment:
       - WATCHTOWER_HTTP_API=true
-      - WATCHTOWER_HTTP_API_TOKEN=token
+      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - WATCHTOWER_LABEL_ENABLE=true
     restart: on-failure:5
     ports:
