@@ -111,7 +111,7 @@ def set_directory_permission(directory, command):
         p = subprocess.Popen(command.split(), stderr=subprocess.PIPE, stdout=subprocess.PIPE,  stdin=subprocess.PIPE) 
         out, err = p.communicate()
         if len(err) <= 0:
-            print("Permission set Successfully !!!")
+            print("Permission set successfully...")
         else:
             raise Exception(err.decode('utf-8'))
     except Exception as e:
