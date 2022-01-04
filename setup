@@ -9,12 +9,12 @@ DEFAULT_INPUTS = {
         "help": "Type in 'yes' to opt-in for beta."
     },
     "CORE_TAG": {
-        "default": "crestsystems/cloudexchange:core-latest",
+        "default": "crestsystems/netskope:core-latest",
         "skip": True,
         "help": ""
     },
     "UI_TAG": {
-        "default": "crestsystems/cloudexchange:ui-latest",
+        "default": "crestsystems/netskope:ui-latest",
         "skip": True,
         "help": ""
     },
