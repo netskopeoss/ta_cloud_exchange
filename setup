@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+import os
+import subprocess
+
+DEFAULT_INPUTS = {
+    "BETA_OPT_IN": {
+        "default": "No",
+        "skip": False,
+        "help": "Type in 'yes' to opt-in for beta."
+    },
+    "CORE_TAG": {
+        "default": "crestsystems/cloudexchange:core-latest",
+        "skip": True,
+        "help": ""
+    },
+    "UI_TAG": {
+        "default": "crestsystems/cloudexchange:ui-latest",
+        "skip": True,
+        "help": ""
+    },
+    "UI_PORT": {
+        "default": 80,
+        "skip": False,
+        "help": ""
+    },
+    "JWT_SECRET": {
+        "default": "secret",
+        "skip": False,
+        "help": ""
+    },
+    "WATCHTOWER_TOKEN": {
+        "default": "token",
+        "skip": True,
+        "help": ""
+    },
+    "MONGODB_USERNAME": {
+        "default": "cteadmin",
+        "skip": True,
+        "help": ""
+    },
+    "MONGODB_PASSWORD": {
+        "default": "cteadmin",
+        "skip": True,
+        "help": ""
+    },
+    "DOCKER_USERNAME": {
+        "default": "",
+        "skip": True,
+        "help": ""
+    },
+    "DOCKER_PASSWORD": {
+        "default": "",
+        "skip": True,
+        "help": ""
+    },
+    "MAX_MAINTENANCE_WINDOW_MINUTES": {
+        "default": 15,
+        "skip": True,
+        "help": ""
+    },
+    "PULL_THREADS": {
+        "default": 6,
+        "skip": True,
+        "help": ""
+    },
+    "MAX_WAIT_ON_LOCK_IN_MINUTES": {
+        "default": 240,
+        "skip": True,
+        "help": ""
+    },
+}
+
+AVAILABLE_INPUTS = {}
+
+CORE_DEFAULT = "crestsystems/cloudexchange:core-latest"
+UI_DEFAULT = "crestsystems/cloudexchange:ui-latest"
+CORE_BETA_DEFAULT = "crestsystems/cloudexchange:core-latest-beta"
+UI_BETA_DEFAULT = "crestsystems/cloudexchange:ui-latest-beta"
+
+
+def put_env_variable(inputs):
+    try:
+        with open(".env", "w") as f:
+            for key, value in inputs.items():
+                f.write(f"{key}={value}\n")
+    except Exception as e:
+        raise Exception(f"Error occured while putting env variables: {e}")
+
+
+def create_env_if_not_exist():
+    try:
+        with open(".env", "a") as f:
+            pass
+    except Exception as e:
+        raise Exception(f"Error occured while creating file: {e}")
+
+def get_all_existed_env_variable():
+    try:
+        with open(".env", "r") as f:
+            for line in f.readlines():
+                key, value = line.split('=')
+                AVAILABLE_INPUTS[key] = value.strip()
+    except Exception as e:
+        raise Exception(f"Error occured while getting env variables: {e}")
+
+
+def set_directory_permission(directory, command):
+    try:
+        print(f"\nSetting permission for {directory} folder...")
+        command = "sudo chown -R 1001:1001 data/mongo-data"
+        p = subprocess.Popen(command.split(), stderr=subprocess.PIPE, stdout=subprocess.PIPE,  stdin=subprocess.PIPE) 
+        out, err = p.communicate()
+        if len(err) <= 0:
+            print("Permission set Successfully !!!")
+        else:
+            raise Exception(err.decode('utf-8'))
+    except Exception as e:
+        p.kill()
+        raise Exception(f"Error occured while setting directory permission for {directory}. Error: {e}")
+
+
+def check_for_certs():
+    try:
+        cert_file = 'data/ssl_certs/cte_cert.crt'
+        key_file = 'data/ssl_certs/cte_cert_key.key' 
+        if os.path.isfile(cert_file) and os.path.isfile(key_file):
+            return True
+        return False
+    except Exception as e:
+        raise Exception(f"Error occured while checking for SSL certs. Error: {e}")
+
+
+def create_self_signed_ssl_certs():
+    try:
+        print(f"Generating self signed certificate...")
+        command = "sudo openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj /CN=localhost"
+        p = subprocess.Popen(command.split(), stderr=subprocess.PIPE, stdout=subprocess.PIPE,  stdin=subprocess.PIPE) 
+        out, err = p.communicate()
+        if p.returncode == 0:
+            print(f"{err.decode('utf-8')}\n")
+        else:
+            raise Exception(f"{err.decode('utf-8')}\n")
+    except Exception as e:
+        p.kill()
+        raise Exception(f"Error occured while generating self-signed ssl certificates. Error: {e}") 
+
+
+def run():
+    try:
+        create_env_if_not_exist()
+        get_all_existed_env_variable()          # Get already exsting env variables
+
+        # Set Permission to mongo-data folder
+        command = "sudo chown -R 1001:1001 data/mongo-data"
+        set_directory_permission("data/mongo-data", command)
+
+        # Set Permission to custom_plugins folder
+        command = "sudo chmod 775 data/custom_plugins"
+        set_directory_permission("data/custom_plugins", command)
+
+        # Enable SSL/Https
+        is_ssl_enabled = check_for_certs()      # Checking if SSL is enabled or not
+        if is_ssl_enabled:
+            DEFAULT_INPUTS["UI_PORT"]["default"] = 443
+            print("")
+        else:
+            d = input("\nDo you want to create self signed certificate? ")
+            if d.strip().lower() in ["y", "yes"]:
+                create_self_signed_ssl_certs()
+                DEFAULT_INPUTS["UI_PORT"]["default"] = 443
+            else:
+                print("")
+
+        # Ask for all configuration parameters
+        for key, item in DEFAULT_INPUTS.items():
+            data = ""
+            if not item["skip"]:
+                if item['help']:
+                    print(item['help'])
+                if key not in AVAILABLE_INPUTS:
+                    data = input(f"Enter {key} (Default: \"{item['default']}\"): ")
+                else:
+                    data = input(f"Enter {key} (Current: \"{AVAILABLE_INPUTS[key]}\"): ")
+                print("")
+            data = data.strip() if isinstance(data, str) else data
+            if not data:
+                if key not in AVAILABLE_INPUTS:
+                    data = item["default"]
+                else:
+                    data = AVAILABLE_INPUTS[key]
+            data = data.strip() if isinstance(data, str) else data
+            if key == "BETA_OPT_IN":
+                if data.lower() in ["y", "yes"]:
+                    AVAILABLE_INPUTS["CORE_TAG"] = CORE_BETA_DEFAULT
+                    AVAILABLE_INPUTS["UI_TAG"] = UI_BETA_DEFAULT
+                else:
+                    AVAILABLE_INPUTS["CORE_TAG"] = CORE_DEFAULT
+                    AVAILABLE_INPUTS["UI_TAG"] = UI_DEFAULT
+            AVAILABLE_INPUTS[key] = data
+
+        put_env_variable(AVAILABLE_INPUTS)
+        
+        print("\nSetup Completed Successfully !!!\nPlease Run start.sh file to start services. !!!\n")
+
+    except KeyboardInterrupt as e:
+        put_env_variable(AVAILABLE_INPUTS)
+        print("\nSetup Completed !!!\n")
+    except Exception as e:
+        print(e)
+
+if __name__=="__main__":
+    run()
