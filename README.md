@@ -1,9 +1,8 @@
 # Quick Start Install Documentation!
 Full documentation can be found here: [Netskope Cloud Exchange](https://docs.netskope.com/en/netskope-cloud-exchange.html)
 ## Prerequisites
-
-
  - Linux System capable of supporting docker.io release of docker, and docker-compose
+ - Python 3
  - Miniumum Requirements Below:
  	- 2 vCPU
  	- 4 GB of Memory
