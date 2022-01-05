@@ -107,7 +107,6 @@ def get_all_existed_env_variable():
 def set_directory_permission(directory, command):
     try:
         print(f"\nSetting permission for {directory} folder...")
-        command = "sudo chown -R 1001:1001 data/mongo-data"
         p = subprocess.Popen(command.split(), stderr=subprocess.PIPE, stdout=subprocess.PIPE,  stdin=subprocess.PIPE) 
         out, err = p.communicate()
         if len(err) <= 0:
@@ -133,7 +132,7 @@ def check_for_certs():
 def create_self_signed_ssl_certs():
     try:
         print(f"Generating self signed certificate...")
-        command = "sudo openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj /CN=localhost"
+        command = "openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj /CN=localhost"
         p = subprocess.Popen(command.split(), stderr=subprocess.PIPE, stdout=subprocess.PIPE,  stdin=subprocess.PIPE) 
         out, err = p.communicate()
         if p.returncode == 0:
@@ -151,11 +150,11 @@ def run():
         get_all_existed_env_variable()          # Get already exsting env variables
 
         # Set Permission to mongo-data folder
-        command = "sudo chown -R 1001:1001 data/mongo-data"
+        command = "chown -R 1001:1001 data/mongo-data"
         set_directory_permission("data/mongo-data", command)
 
         # Set Permission to custom_plugins folder
-        command = "sudo chmod 775 data/custom_plugins"
+        command = "chmod 775 data/custom_plugins"
         set_directory_permission("data/custom_plugins", command)
 
         # Enable SSL/Https
