@@ -1,8 +1,4 @@
 #!/bin/bash
-# ------------------------------------------------------------------
-# [Nijraj Gelani] Title
-#          Description
-# ------------------------------------------------------------------
 
 SUBJECT=some-unique-id
 
@@ -154,8 +150,8 @@ fi
 
 # Take inputs from user
 read -p "Enter Host name (e.g. https://<host-name>:<port>): " HOST
-read -p "Enter Username: " USERNAME
-read -sp "Enter Password: " PASSWORD
+read -p "Enter CE Admin Username: " USERNAME
+read -sp "Enter CE Admin Password: " PASSWORD
 echo ""
 
 # check whether credentials are correct or not by making an API call 
