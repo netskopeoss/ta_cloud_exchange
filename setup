@@ -72,10 +72,10 @@ DEFAULT_INPUTS = {
 
 AVAILABLE_INPUTS = {}
 
-CORE_DEFAULT = "crestsystems/netskope:core-latest"
-UI_DEFAULT = "crestsystems/netskope:ui-latest"
-CORE_BETA_DEFAULT = "crestsystems/cloudexchange:core-latest-beta"
-UI_BETA_DEFAULT = "crestsystems/cloudexchange:ui-latest-beta"
+CORE_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-latest"
+UI_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-latest"
+CORE_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-beta"
+UI_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-beta"
 
 
 def put_env_variable(inputs):
