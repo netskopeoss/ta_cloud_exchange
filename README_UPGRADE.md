@@ -20,11 +20,11 @@
 
 6. Copy Data from Cloud Exchange Backup made in Step 4 to Cloud Exchange 3
 
-  For CE2.x
+  <p>For CE2.x</p>
 
   - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/* data/mongo-data/data/db/`. 
  
-  For CE3.x
+  <p>For CE3.x</p>
  
   - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/data/db/* data/mongo-data/data/db/`
 
