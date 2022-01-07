@@ -12,14 +12,18 @@
 
 4. Make backup of your Cloud Exchange database
   - `cd ..`
-  - `mv ta_cloud_exchange ta_cloud_exchange_2_backup`
+  - `mv ta_cloud_exchange ta_cloud_exchange_backup`
 
 5. Install New version of Cloud Exchange 3
-  - `cp ta_cloud_exchange_3.zip netskope/`
-  - `unzip ta_cloud_exchange_3.zip`
+  - `git clone https://github.com/netskopeoss/ta_cloud_exchange'
+  - `cd ta_cloud_exchange`
 
 6. Copy Data from Cloud Exchange Backup made in Step 4 to Cloud Exchange 3
-  - `sudo cp -R ta_cloud_exchange_2_backup/data/mongo-data/* data/mongo-data/data/db/`
+For CE2.x
+  - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/* data/mongo-data/data/db/`
+or
+For CE3.x
+  - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/data/db/* data/mongo-data/data/db/`
 
 7. Execute the setup script
   - `sudo ./setup`
