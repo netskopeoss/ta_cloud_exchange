@@ -26,10 +26,18 @@
  
   <p>For CE3.x</p>
   - `sudo mkdir -p data/mongo-data/data/db/`.  
-  - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/data/db/* data/mongo-data/data/db/`
+  - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/data/db/* data/mongo-data/data/db/`. 
 
 7. Execute the setup script
   - `sudo ./setup`
 
 8. Launch Cloud Exchange 3
   - `sudo ./start`
+
+
+ ## Troubleshooting
+ If you issue sudo ./start and you are presented with a help screen.
+ 
+ - Please download a newer version of docker-compose from:
+ https://docs.docker.com/compose/install/
+ 
