@@ -23,6 +23,11 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	 
 
  ## Troubleshooting
+If you issue sudo ./start and you are presented with a help screen.
+ 
+ - Please download a newer version of docker-compose from:
+ https://docs.docker.com/compose/install/
+ 
 If bad gateway is received when you try to login:
  - Check if  step 2 was done correctly:
  `ls -lash data`
