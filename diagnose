@@ -149,7 +149,7 @@ if [ $? -eq 127 ]; then
 fi
 
 # Take inputs from user
-read -p "Enter Host name (e.g. https://<host-name>:<port>): " HOST
+read -p "Enter CE Host name (e.g. http(s)://<host-name>:<port>): " HOST
 read -p "Enter CE Admin Username: " USERNAME
 read -sp "Enter CE Admin Password: " PASSWORD
 echo ""
@@ -167,7 +167,8 @@ done
 
 # create zip file
 echo "----- Creating zip file -----"
-OUT="`date`.zip"
+OUT="`date | tr " " "-"`.zip"
+
 zip -r "$OUT" ${outputs[@]}
 echo $OUT
 
