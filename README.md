@@ -3,6 +3,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 ## Prerequisites
  - Linux System capable of supporting docker.io release of docker, and docker-compose
  - Python 3
+ - Zip (For the diagnose script)
  - Miniumum Requirements Below:
  	- 2 vCPU
  	- 4 GB of Memory
