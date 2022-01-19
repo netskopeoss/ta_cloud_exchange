@@ -167,7 +167,7 @@ done
 
 # create zip file
 echo "----- Creating zip file -----"
-OUT="`date | tr " " "-"`.zip"
+OUT="`date | tr " " "_"`.zip"
 
 zip -r "$OUT" ${outputs[@]}
 echo $OUT
