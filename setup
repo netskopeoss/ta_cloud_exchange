@@ -72,10 +72,10 @@ DEFAULT_INPUTS = {
 
 AVAILABLE_INPUTS = {}
 
-CORE_DEFAULT = "crestsystems/netskope:core-latest"
-UI_DEFAULT = "crestsystems/netskope:ui-latest"
-CORE_BETA_DEFAULT = "crestsystems/cloudexchange:core-latest-beta"
-UI_BETA_DEFAULT = "crestsystems/cloudexchange:ui-latest-beta"
+CORE_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-latest"
+UI_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-latest"
+CORE_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-beta"
+UI_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-beta"
 
 
 def put_env_variable(inputs):
@@ -177,9 +177,9 @@ def run():
                 if item['help']:
                     print(item['help'])
                 if key not in AVAILABLE_INPUTS:
-                    data = input(f"Enter {key} (Default: \"{item['default']}\"): ")
+                    data = input(f"> Enter {key} (Default: \"{item['default']}\"): ")
                 else:
-                    data = input(f"Enter {key} (Current: \"{AVAILABLE_INPUTS[key]}\"): ")
+                    data = input(f"> Enter {key} (Current: \"{AVAILABLE_INPUTS[key]}\"): ")
                 print("")
             data = data.strip() if isinstance(data, str) else data
             if not data:
@@ -199,11 +199,11 @@ def run():
 
         put_env_variable(AVAILABLE_INPUTS)
         
-        print("\nSetup Completed Successfully !!!\nPlease Run start.sh file to start services. !!!\n")
+        print("\nSetup completed successfully...\n\nExecute this command to start CE:\n  > sudo ./start")
 
     except KeyboardInterrupt as e:
         put_env_variable(AVAILABLE_INPUTS)
-        print("\nSetup Completed !!!\n")
+        print("\nSetup completed successfull...\n")
     except Exception as e:
         print(e)
 
