@@ -1,8 +1,10 @@
 # Quick Start Install Documentation!
 Full documentation can be found here: [Netskope Cloud Exchange](https://docs.netskope.com/en/netskope-cloud-exchange.html)
 ## Prerequisites
+
  - Currently CE is not supported on MacOS.
  - Linux System capable of supporting docker.io release of docker, and docker-compose
+ - Python 3
  - Miniumum Requirements Below:
  	- 2 vCPU
  	- 4 GB of Memory
@@ -15,27 +17,10 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	a. `mkdir netskope`<br>
 	b. `cd netsokpe`<br>
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br>   
- 2. Set directory permissions<br>
-	a. `cd ta_cloud_exchange`<br> 
-	b.`sudo chown -R 1001:1001 data/mongo-data`<br> 
-	c. `chmod 775 data/custom_plugins`<br>
- 3. (Recommended / Optional): enable ssl / https<br>
-	a. edit docker-compose.yml file to change the following:
-	 ```
-	 ui:
-	   ports:
-	     - 80:3000
-	```
-	to
-	```
-	ui: 
-	  ports:
-	    - 443:3000
-	```
-	b. create self signed certificate - or use personal certificates<br>
-	`openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj '/CN=localhost'`
+ 2. Execute the setup script:<br>
+	a. `sudo ./setup`<br>
  4. Launch Cloud Exchange 3<br>
- 	a. `sudo docker-compose --compatibility up -d`<br>
+ 	a. `sudo ./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
 	 
 
