@@ -24,8 +24,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  	a. `sudo ./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
 	 
-Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory.<br>
-The name of certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
+Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory. The name of certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
 
  ## Troubleshooting
 If bad gateway is received when you try to login:
