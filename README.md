@@ -1,6 +1,8 @@
 # Quick Start Install Documentation!
 Full documentation can be found here: [Netskope Cloud Exchange](https://docs.netskope.com/en/netskope-cloud-exchange.html)
 ## Prerequisites
+
+ - Currently CE is not supported on MacOS.
  - Linux System capable of supporting docker.io release of docker, and docker-compose
  - Python 3
  - Miniumum Requirements Below:
