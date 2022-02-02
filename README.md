@@ -2,17 +2,17 @@
 Full documentation can be found here: [Netskope Cloud Exchange](https://docs.netskope.com/en/netskope-cloud-exchange.html)
 ## Prerequisites
 
- - Currently CE is not supported on MacOS.
- - Linux System capable of supporting docker.io release of docker, and docker-compose
+ - Currently, CE is not supported on macOS.
+ - Linux System capable of supporting docker.io release of docker and docker-compose
  - Python 3
  - Zip (For the diagnose script)
- - Miniumum Requirements Below:
+ - Minimum Requirements Below:
  	- 2 vCPU
  	- 4 GB of Memory
 	- 20 GB of storage
- - Please see full documentation for scale numbers.
+ - Please see the full documentation for scale numbers.
 
- ## Install Procedure
+## Install Procedure
  
  1. Clone repository to volume with requisite 20 GB of storage<br>
 	a. `mkdir netskope`<br>
@@ -26,8 +26,8 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	 
 Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory. The name of certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
 
- ## Troubleshooting
-If bad gateway is received when you try to login:
+## Troubleshooting
+If the bad gateway is received when you try to log in:
  - Check if  step 2 was done correctly:
  `ls -lash data`
  ```
