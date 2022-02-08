@@ -10,19 +10,35 @@
   - `docker-compose rm`
   - Yes you want to delete
 
-4. Make backup of your Cloud Exchange 2 database
+4. Make backup of your Cloud Exchange database
   - `cd ..`
-  - `mv ta_cloud_exchange ta_cloud_exchange_2_backup`
+  - `mv ta_cloud_exchange ta_cloud_exchange_backup`
 
 5. Install New version of Cloud Exchange 3
-  - `cp ta_cloud_exchange_3.zip netskope/`
-  - `unzip ta_cloud_exchange_3.zip`
+  - `git clone https://github.com/netskopeoss/ta_cloud_exchange'
+  - `cd ta_cloud_exchange`
 
-6. Copy Data from Cloud Exchange 2 to Cloud Exchange 3
-  - `sudo cp -R ta_cloud_exchange_2_backup/data/mongo-data/* data/mongo-data/data/db/`
+6. Copy Data from Cloud Exchange Backup made in Step 4 to Cloud Exchange 3
 
+  <p>For CE2.x</p>
+  - `sudo mkdir -p data/mongo-data/data/db/`<br /> 
+  - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/* data/mongo-data/data/db/` 
+  
+  <p>For CE3.x</p>
+  - `sudo mkdir -p data/mongo-data/data/db/` <br /> 
+  - `sudo cp -R ../ta_cloud_exchange_backup/data/mongo-data/data/db/* data/mongo-data/data/db/` 
+  
 7. Execute the setup script
   - `sudo ./setup`
 
 8. Launch Cloud Exchange 3
   - `sudo ./start`
+
+
+## Troubleshooting
+
+If you issue sudo ./start and you are presented with a help screen.
+
+- Please download a newer version of docker-compose from:
+https://docs.docker.com/compose/install/
+ 
