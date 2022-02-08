@@ -100,8 +100,8 @@ out_ce_logs() {
   OUT="ce_platform_logs.log"
   if [ -z "$TOKEN" ]; 
   then
-    echo "==> Error while collecting CE Version. Check hostname, username, or password." > /dev/tty
-    echo "Error while collecting CE Version. Check hostname, username, or password." > $OUT
+    echo "==> Error while collecting CE Logs. Check hostname, username, or password." > /dev/tty
+    echo "Error while collecting CE Logs. Check hostname, username, or password." > $OUT
   else
     curl -s -X 'GET' \
       "$HOST/api/logs/?skip=0&limit=10&ascending=true&aggregate=false&filters=%7B%7D&download=true" \
