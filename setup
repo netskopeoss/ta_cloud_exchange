@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import os
 import subprocess
+import platform
 
 DEFAULT_INPUTS = {
     "BETA_OPT_IN": {
@@ -149,9 +150,10 @@ def run():
         create_env_if_not_exist()
         get_all_existed_env_variable()          # Get already exsting env variables
 
-        # Set Permission to mongo-data folder
-        command = "chown -R 1001:1001 data/mongo-data"
-        set_directory_permission("data/mongo-data", command)
+        # Set Permission to mongo-data folder if system is not MacOS.
+        if platform.system().lower() not in ["darwin"]:
+            command = "chown -R 1001:1001 data/mongo-data"
+            set_directory_permission("data/mongo-data", command)
 
         # Set Permission to custom_plugins folder
         command = "chmod 775 data/custom_plugins"

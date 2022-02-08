@@ -35,9 +35,10 @@
   - `sudo ./start`
 
 
- ## Troubleshooting
- If you issue sudo ./start and you are presented with a help screen.
- 
- - Please download a newer version of docker-compose from:
- https://docs.docker.com/compose/install/
+## Troubleshooting
+
+If you issue sudo ./start and you are presented with a help screen.
+
+- Please download a newer version of docker-compose from:
+https://docs.docker.com/compose/install/
  
