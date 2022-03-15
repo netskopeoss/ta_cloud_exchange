@@ -17,7 +17,8 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  1. Clone repository to volume with requisite 20 GB of storage<br>
 	a. `mkdir netskope`<br>
 	b. `cd netskope`<br>
-	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br>   
+	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br> 
+	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
 	a. `sudo ./setup`<br>
  4. Launch Cloud Exchange 3<br>
