@@ -1,0 +1,178 @@
+#!/bin/bash
+
+SUBJECT=some-unique-id
+
+# --- Locks -------------------------------------------------------
+LOCK_FILE=/tmp/$SUBJECT.lock
+if [ -f "$LOCK_FILE" ]; then
+   echo "Script is already running"
+   exit
+fi
+
+trap "rm -f $LOCK_FILE" EXIT
+touch $LOCK_FILE
+
+# --- Output functions --------------------------------------------
+
+out_docker_core_logs() {
+  echo "----- Collecting Core Logs -----" > /dev/tty
+  OUT="core.log"
+  docker-compose logs --no-color core > $OUT
+  echo $OUT
+}
+
+out_docker_ui_logs() {
+  echo "----- Collecting UI Logs -----" > /dev/tty
+  OUT="ui.log"
+  docker-compose logs --no-color ui > $OUT
+  echo $OUT
+}
+
+out_docker_mongo_logs() {
+  echo "----- Collecting Mongo Logs -----" > /dev/tty
+  OUT="mongo.log"
+  docker-compose logs --no-color mongodb-primary > $OUT
+  echo $OUT
+}
+
+out_docker_rabbitmq_logs() {
+  echo "----- Collecting RabbitMq Logs -----" > /dev/tty
+  OUT="rabbitmq.log"
+  docker-compose logs --no-color rabbitmq-stats > $OUT
+  echo $OUT
+}
+
+out_stats() {
+  echo "----- Collecting Machine Stats -----" > /dev/tty
+  OUT="system_stats.txt"
+  echo "> lscpu" > $OUT
+  lscpu >> $OUT
+  echo "----------------------------------------------------------------------------------" >> $OUT
+  echo "> free -h" >> $OUT
+  free -h >> $OUT
+  echo "----------------------------------------------------------------------------------" >> $OUT
+  echo "> df -h" >> $OUT
+  df -h >> $OUT
+  echo $OUT
+}
+
+out_docker_stats() {
+  echo "----- Collecting Docker Stats -----" > /dev/tty
+  OUT="docker_stats.txt"
+  echo "> docker ps --all" > $OUT
+  docker ps --all >> $OUT
+  echo "---------------------------------------------------------------------------------" >> $OUT
+  echo "> docker system info" >> $OUT
+  docker system info >> $OUT
+  echo "---------------------------------------------------------------------------------" >> $OUT
+  echo "> docker-compose version" >> $OUT
+  docker-compose version >> $OUT
+  echo "---------------------------------------------------------------------------------" >> $OUT
+  echo "> docker system df" >> $OUT
+  docker system df >> $OUT
+  echo $OUT
+}
+
+out_versions() {
+  echo "----- Collecting CE Version -----" > /dev/tty
+  OUT="ce_platform_versions.txt"
+  if [ -z "$TOKEN" ]; 
+  then
+    echo "==> Error while collecting CE Version. Check hostname, username, or password." > /dev/tty
+    echo "Error while collecting CE Version. Check hostname, username, or password." > $OUT
+  else
+    SETTINGS_RESPONSE=`curl -s -X 'GET' \
+      "$HOST/api/settings" \
+      -H 'accept: application/json' \
+      -H "Authorization: Bearer $TOKEN"`
+
+    CORE_VERSION=`echo $SETTINGS_RESPONSE | grep -Po '"version":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
+    echo "> Core-Version: $CORE_VERSION" > $OUT
+
+    DB_VERSION=`echo $SETTINGS_RESPONSE | grep -Po '"databaseVersion":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
+    echo "> DB-Version: $DB_VERSION" >> $OUT
+  fi
+  echo $OUT
+}
+
+out_ce_logs() {
+  echo "----- Collecting CE Logs -----" > /dev/tty
+  OUT="ce_platform_logs.log"
+  if [ -z "$TOKEN" ]; 
+  then
+    echo "==> Error while collecting CE Logs. Check hostname, username, or password." > /dev/tty
+    echo "Error while collecting CE Logs. Check hostname, username, or password." > $OUT
+  else
+    curl -s -X 'GET' \
+      "$HOST/api/logs/?skip=0&limit=10&ascending=true&aggregate=false&filters=%7B%7D&download=true" \
+      -H 'accept: application/json' \
+      -H "Authorization: Bearer $TOKEN" -o "$OUT"
+  fi
+  echo $OUT
+}
+
+out_docker_images(){
+  echo "----- Collecting Docker Images -----" > /dev/tty
+  OUT="docker_images.txt"
+  docker inspect --format='{{.Id}} {{.Name}} {{.Image}}' $(docker ps -aq) > "$OUT"
+  echo $OUT
+}
+
+# --- Body --------------------------------------------------------
+#  SCRIPT LOGIC GOES HERE
+output_generators=(
+    out_versions
+    out_stats
+    out_docker_stats
+    out_docker_images
+    out_docker_core_logs
+    out_docker_ui_logs
+    out_docker_mongo_logs
+    out_docker_rabbitmq_logs
+    out_ce_logs
+)
+
+outputs=()
+
+# check whether zip is installed or not
+zip -v 1> /dev/null
+if [ $? -eq 127 ]; then
+  echo "Zip is not installed"
+  exit 1;
+fi
+
+# check whether curl is installed or not
+curl --version 1> /dev/null
+if [ $? -eq 127 ]; then
+  echo "curl is not installed"
+  exit 1;
+fi
+
+# Take inputs from user
+read -p "Enter CE Host name (e.g. http(s)://<host-name>:<port>): " HOST
+read -p "Enter CE Admin Username: " USERNAME
+read -sp "Enter CE Admin Password: " PASSWORD
+echo ""
+
+# check whether credentials are correct or not by making an API call 
+RESPONSE=`curl -s -X 'POST' \
+  "$HOST/api/auth" \
+  -d "grant_type=password&username=$USERNAME&password=$PASSWORD&scopes=read write me"`
+TOKEN=`echo $RESPONSE | grep -Po '"access_token":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
+
+for i in ${output_generators[@]}; do
+  output=`$i`
+  outputs+="${output} "
+done
+
+# create zip file
+echo "----- Creating zip file -----"
+OUT="`date | tr " " "_"`.zip"
+
+zip -r "$OUT" ${outputs[@]}
+echo $OUT
+
+# remove individual files
+rm -rf ${outputs[@]}
+
+# -----------------------------------------------------------------
