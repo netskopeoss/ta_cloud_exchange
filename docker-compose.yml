@@ -9,7 +9,7 @@ services:
       - RABBITMQ_PASSWORD=${MAINTENANCE_PASSWORD}
       - RABBITMQ_SECURE_PASSWORD=yes
       - RABBITMQ_DISK_FREE_ABSOLUTE_LIMIT=1
-    restart: on-failure:5
+    restart: always
     volumes:
       - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
     ports:
@@ -33,7 +33,7 @@ services:
       - MONGODB_USERNAME=cteadmin
       - MONGODB_PASSWORD=${MAINTENANCE_PASSWORD}
       - MONGODB_DATABASE=cte
-    restart: on-failure:5
+    restart: always
     ports:
       - "27017:27017"
     logging:
@@ -59,7 +59,7 @@ services:
       - MAX_MAINTENANCE_WINDOW_MINUTES=${MAX_MAINTENANCE_WINDOW_MINUTES}
       - PULL_THREADS=${PULL_THREADS}
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
-    restart: on-failure:5
+    restart: always
     logging:
       options:
         max-size: "10m"
@@ -71,7 +71,7 @@ services:
       - com.centurylinklabs.watchtower.enable=true
   ui:
     image: index.docker.io/${UI_TAG}
-    restart: on-failure:5
+    restart: always
     environment:
       - CE_API_URL=http://core
     volumes:
@@ -95,7 +95,7 @@ services:
       - WATCHTOWER_HTTP_API=true
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - WATCHTOWER_LABEL_ENABLE=true
-    restart: on-failure:5
+    restart: always
     ports:
       - 8080:8080
     command: --http-api-update
