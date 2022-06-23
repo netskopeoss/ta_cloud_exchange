@@ -32,8 +32,9 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 
 1. If you issue sudo ./start and you are presented with a help screen.
  
-   - Please download a newer version of docker-compose from:
-https://www.digitalocean.com/community/tutorials/how-to-install-docker-compose-on-ubuntu-18-04
+   - Please download a newer version of docker-compose:<br>
+https://www.digitalocean.com/community/tutorials/how-to-install-docker-compose-on-ubuntu-18-04 <br>
+Check your version with 'docker-compose --version'<br>
 
 2. If bad gateway is received when you try to login:
 
