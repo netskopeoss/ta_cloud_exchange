@@ -20,7 +20,8 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br> 
 	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
-	a. `sudo ./setup`<br>
+	a.`cd ta_cloud_exchange`<br>
+	b.`sudo ./setup`<br>
  4. Launch Cloud Exchange 3<br>
  	a. `sudo ./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
@@ -31,9 +32,10 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 
 1. If you issue sudo ./start and you are presented with a help screen.
  
-   - Please download a newer version of docker-compose from:
-   https://docs.docker.com/compose/install/
- 
+   - Please download a newer version of docker-compose:<br>
+https://www.digitalocean.com/community/tutorials/how-to-install-docker-compose-on-ubuntu-18-04 <br>
+Check your version with `docker-compose --version`<br>
+
 2. If bad gateway is received when you try to login:
 
    - Check if  step 2 was done correctly:
