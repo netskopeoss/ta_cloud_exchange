@@ -14,7 +14,6 @@ services:
       - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
     ports:
       - "15672:15672"
-      - "5672:5672"
     logging:
       options:
         max-size: "10m"
@@ -33,9 +32,9 @@ services:
       - MONGODB_USERNAME=cteadmin
       - MONGODB_PASSWORD=${MAINTENANCE_PASSWORD}
       - MONGODB_DATABASE=cte
+      - HTTP_PROXY=${HTTP_PROXY}
+      - HTTPS_PROXY=${HTTPS_PROXY}
     restart: always
-    ports:
-      - "27017:27017"
     logging:
       options:
         max-size: "10m"
@@ -47,7 +46,7 @@ services:
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - MONGO_CONNECTION_STRING=mongodb://cteadmin:${MAINTENANCE_PASSWORD_ESCAPED}@mongodb-primary:27017/cte
-      - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD}@rabbitmq-stats
+      - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD_ESCAPED}@rabbitmq-stats
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ENABLE_CELERY_BEAT=true
@@ -59,6 +58,8 @@ services:
       - MAX_MAINTENANCE_WINDOW_MINUTES=${MAX_MAINTENANCE_WINDOW_MINUTES}
       - PULL_THREADS=${PULL_THREADS}
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
+      - HTTP_PROXY=${HTTP_PROXY}
+      - HTTPS_PROXY=${HTTPS_PROXY}
     restart: always
     logging:
       options:
@@ -74,6 +75,7 @@ services:
     restart: always
     environment:
       - CE_API_URL=http://core
+      - TLS_VERSION=${ENABLE_TLS_V_1_2:-TLSv1.3}
     volumes:
       - ./data/ssl_certs:/tmp/ssl_certs:z
     ports:
@@ -96,8 +98,6 @@ services:
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - WATCHTOWER_LABEL_ENABLE=true
     restart: always
-    ports:
-      - 8080:8080
     command: --http-api-update
     logging:
       options:
