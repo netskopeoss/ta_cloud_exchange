@@ -9,7 +9,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Minimum Requirements Below:
  	- 2 vCPU
  	- 4 GB of Memory
-	- 20 GB of storage
+	- 20 GB of free storage (40 GB recommended)
  - Please see the full documentation for scale numbers.
 
 ## Install Procedure
