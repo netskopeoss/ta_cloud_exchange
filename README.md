@@ -20,10 +20,9 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br> 
 	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
-	a. `sudo ./setup`<br>
-	Note: For the beta branch use `sudo python3 ./setup`<br>
+	a. `sudo python3 ./setup`
  4. Launch Cloud Exchange 3<br>
- 	a. `sudo ./start`<br>
+ 	a. `./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
 	 
 Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory. The name of the certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
