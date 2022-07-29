@@ -22,7 +22,8 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  2. Execute the setup script:<br>
 
 	a.`cd ta_cloud_exchange`<br>
-	b.`sudo python3 ./setup`<br>
+	b.`python3 ./setup`<br>
+	Note: If you are upgrading please review the steps at https://docs.netskope.com/en/install-cloud-exchange.html<br>
 
  4. Launch Cloud Exchange 3<br>
  	a. `./start`<br>
