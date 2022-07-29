@@ -35,6 +35,7 @@ services:
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
     restart: always
+
     logging:
       options:
         max-size: "10m"
@@ -47,6 +48,7 @@ services:
     environment:
       - MONGO_CONNECTION_STRING=mongodb://cteadmin:${MAINTENANCE_PASSWORD_ESCAPED}@mongodb-primary:27017/cte
       - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD_ESCAPED}@rabbitmq-stats
+
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ENABLE_CELERY_BEAT=true
@@ -60,6 +62,7 @@ services:
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
+
     restart: always
     logging:
       options:

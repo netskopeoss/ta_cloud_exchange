@@ -24,6 +24,7 @@ out_docker_core_logs() {
   else  
     docker-compose logs --no-color core >& $OUT
   fi
+
   echo $OUT
 }
 
@@ -35,6 +36,7 @@ out_docker_ui_logs() {
   else  
     docker-compose logs --no-color ui >& $OUT
   fi
+
   echo $OUT
 }
 
@@ -46,6 +48,7 @@ out_docker_mongo_logs() {
   else  
     docker-compose logs --no-color mongodb-primary >& $OUT
   fi
+
   echo $OUT
 }
 
@@ -57,6 +60,7 @@ out_docker_rabbitmq_logs() {
   else  
     docker-compose logs --no-color rabbitmq-stats >& $OUT
   fi
+
   echo $OUT
 }
 
@@ -64,6 +68,7 @@ out_stats() {
   echo "----- Collecting Machine Stats -----" > /dev/tty
   OUT="system_stats.txt"
   echo "> lscpu" >& $OUT
+
   lscpu >> $OUT
   echo "----------------------------------------------------------------------------------" >> $OUT
   echo "> free -h" >> $OUT
@@ -106,6 +111,7 @@ out_docker_stats() {
     docker system df >> $OUT
     echo $OUT
   fi
+
 }
 
 out_versions() {
@@ -117,12 +123,14 @@ out_versions() {
     echo "Error while collecting CE Version. Check hostname, username, or password." >& $OUT
   else
     SETTINGS_RESPONSE=`curl -k --tlsv1.3 -s -X 'GET' \
+
       "$HOST/api/settings" \
       -H 'accept: application/json' \
       -H "Authorization: Bearer $TOKEN"`
 
     CORE_VERSION=`echo $SETTINGS_RESPONSE | grep -Po '"version":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
     echo "> Core-Version: $CORE_VERSION" >& $OUT
+
 
     DB_VERSION=`echo $SETTINGS_RESPONSE | grep -Po '"databaseVersion":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
     echo "> DB-Version: $DB_VERSION" >> $OUT
@@ -139,6 +147,7 @@ out_ce_logs() {
     echo "Error while collecting CE Logs. Check hostname, username, or password." >& $OUT
   else
     curl -k --tlsv1.3 -s -X 'GET' \
+
       "$HOST/api/logs/?skip=0&limit=10&ascending=true&aggregate=false&filters=%7B%7D&download=true" \
       -H 'accept: application/json' \
       -H "Authorization: Bearer $TOKEN" -o "$OUT"
@@ -158,6 +167,7 @@ out_docker_images(){
     docker inspect --format='{{.Id}} {{.Name}} {{.Image}}' $(docker ps -aq) >& "$OUT"
     echo $OUT
   fi
+
 }
 
 # --- Body --------------------------------------------------------
@@ -198,6 +208,7 @@ echo ""
 
 # check whether credentials are correct or not by making an API call 
 RESPONSE=`curl -k --tlsv1.3 -s -X 'POST' \
+
   "$HOST/api/auth" \
   -d "grant_type=password&username=$USERNAME&password=$PASSWORD&scopes=read write me"`
 TOKEN=`echo $RESPONSE | grep -Po '"access_token":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
