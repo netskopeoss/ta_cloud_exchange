@@ -21,7 +21,11 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
 	a.`cd ta_cloud_exchange`<br>
+<<<<<<< HEAD
 	b.`sudo python3 ./setup`<br>
+=======
+	b.`sudo ./setup`<br>
+>>>>>>> parent of 81b3cb7 (Setup script update (#14))
  4. Launch Cloud Exchange 3<br>
  	a. `./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
