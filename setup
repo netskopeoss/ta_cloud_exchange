@@ -151,7 +151,7 @@ def put_proxy_in_env():
             for key, value in AVAILABLE_INPUTS.items():
                 f.write(f"{key}={value}\n")
     except Exception as e:
-        raise Exception(f"Error occured while putting proxy variables: {e}")
+        raise Exception(f"Error occurred while putting proxy variables: {e}")
 
 
 def put_env_variable(inputs):
@@ -160,7 +160,7 @@ def put_env_variable(inputs):
             for key, value in inputs.items():
                 f.write(f"{key}={value}\n")
     except Exception as e:
-        raise Exception(f"Error occured while putting env variables: {e}")
+        raise Exception(f"Error occurred while putting env variables: {e}")
 
 
 def create_env_if_not_exist():
@@ -168,7 +168,7 @@ def create_env_if_not_exist():
         with open(".env", "a") as f:
             pass
     except Exception as e:
-        raise Exception(f"Error occured while creating file: {e}")
+        raise Exception(f"Error occurred while creating file: {e}")
 
 
 def get_all_existed_env_variable():
@@ -184,7 +184,7 @@ def get_all_existed_env_variable():
                         key, value = line.split("=", 1)
                         AVAILABLE_INPUTS[key] = value.strip()
     except Exception as e:
-        raise Exception(f"Error occured while getting env variables: {e}")
+        raise Exception(f"Error occurred while getting env variables: {e}")
 
 
 def set_directory_permission(directory, command):
@@ -205,7 +205,7 @@ def set_directory_permission(directory, command):
         if p:
             p.kill()
         raise Exception(
-            f"Error occured while setting file permissions for {directory}. Error: {e}"
+            f"Error occurred while setting file permissions for {directory}. Error: {e}"
         )
 
 
@@ -218,7 +218,7 @@ def check_for_certs():
         return False
     except Exception as e:
         raise Exception(
-            f"Error occured while checking for SSL certs. Error: {e}"
+            f"Error occurred while checking for SSL certs. Error: {e}"
         )
 
 
@@ -227,7 +227,7 @@ def create_self_signed_ssl_certs():
         print(
             f"Generating self signed certificate with validity of one year..."
         )
-        command = "openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj /CN=localhost"
+        command = "openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj /CN=localhost -extensions extendedkeyusage -config data/ssl_certs/extendedkeyusage.txt"
         p = subprocess.Popen(
             command.split(),
             stderr=subprocess.PIPE,
@@ -242,7 +242,7 @@ def create_self_signed_ssl_certs():
     except Exception as e:
         p.kill()
         raise Exception(
-            f"Error occured while generating self-signed ssl certificates. Error: {e}"
+            f"Error occurred while generating self-signed ssl certificates. Error: {e}"
         )
 
 
@@ -289,7 +289,7 @@ def check_machine_specs():
     # Check Disk Space
     try:
         path = "/var/lib/docker"
-        if isRedHat():
+        if isRedHat() and not isRedHat79():
             path = "/var/lib/containers"
         disk_stats = shutil.disk_usage(path)
         free_space = disk_stats.free
@@ -311,7 +311,7 @@ def check_machine_specs():
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         result = sock.connect_ex(("127.0.0.1", 15672))
         if result == 0:
-            print_fail(f"Port 15672 is already in use.")
+            print_fail(f"Port 15672 is already in use. (Please stop the Netskope CE instance if already running (using `./stop`) and re-run the setup script.)")
             CHECKS["Port Check"] = Status.FAIL
         else:
             print_pass(f"Port 15672 is available.")
@@ -729,11 +729,30 @@ def isRedHat():
         return False
 
 
+def isRedHat79():
+    try:
+        with open("/etc/redhat-release") as f:
+            content = f.readline()
+            if content.startswith("Red Hat") and "7.9" in content:
+                return True
+            else:
+                return False
+    except Exception as e:
+        return False
+
+
 def check_prerequisites():
     check_connectivity()
     check_machine_specs()
     print("\nVerifying docker/podman prerequisites...")
-    if isRedHat():
+    if isRedHat79():
+        try:
+            check_docker_versions()
+        except Exception as e:
+            print_fail(
+                f"Could not verify Docker/Docker-compose version of the machine"
+            )
+    elif isRedHat():
         try:
             check_podman_versions()
         except Exception as e:
@@ -803,12 +822,12 @@ def check_and_apply_file_permissions():
                     CHECKS["MONGO-FILE"] = Status.PASS
             except Exception as e:
                 print_fail(
-                    f"Error occured while verifying file permissions for data/mongo-data"
+                    f"Error occurred while verifying file permissions for data/mongo-data"
                 )
                 CHECKS["MONGO-FILE"] = Status.FAIL
     except Exception as e:
         # print(e)
-        print_fail(f"Error occured while verifying owner of data/mongo-data")
+        print_fail(f"Error occurred while verifying owner of data/mongo-data")
         CHECKS["MONGO"] = Status.FAIL
 
     
@@ -849,7 +868,7 @@ def check_and_apply_file_permissions():
     except Exception as e:
         # print(e)
         print_fail(
-            f"Error occured while verifying file permissions for data/custom_plugins"
+            f"Error occurred while verifying file permissions for data/custom_plugins"
         )
         CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
 
@@ -915,7 +934,7 @@ def check_and_apply_file_permissions():
             
     except Exception as e:
         print_fail(
-            f"Error occured while verifying file permissions for data/ssl_certs"
+            f"Error occurred while verifying file permissions for data/ssl_certs"
         )
         CHECKS["SSL_CERTS"] = Status.FAIL
 
@@ -944,7 +963,7 @@ def check_and_apply_file_permissions():
                 CHECKS["RABBITMQ"] = Status.PASS
     except Exception as e:
         print_fail(
-            f"Error occured while verifying file permissions for data/rabbitmq"
+            f"Error occurred while verifying file permissions for data/rabbitmq"
         )
         CHECKS["RABBITMQ"] = Status.FAIL
 
@@ -1237,7 +1256,7 @@ def run():
                         elif key == "MAINTENANCE_PASSWORD":
                             data = "a"
                             confirm_data = "b"
-                            while data != confirm_data:
+                            while data != confirm_data or len(data) == 0:
                                 data = getpass(f"> {user_input}: ").strip()
                                 if data == "":
                                     print(
@@ -1395,4 +1414,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
