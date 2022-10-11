@@ -10,7 +10,6 @@ services:
       - RABBITMQ_SECURE_PASSWORD=yes
       - RABBITMQ_DISK_FREE_ABSOLUTE_LIMIT=1
     restart: always
-
     volumes:
       - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
     ports:
@@ -36,7 +35,6 @@ services:
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
     restart: always
-
     logging:
       options:
         max-size: "10m"
@@ -62,8 +60,8 @@ services:
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
+      - BETA_OPT_IN=${BETA_OPT_IN}
     restart: always
-
     logging:
       options:
         max-size: "10m"
