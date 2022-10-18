@@ -70,12 +70,6 @@ DEFAULT_INPUTS = {
         "help": "",
         "user_input": "Do you want to enable TLSv1.2 along with TLSv1.3 for CE UI",
     },
-    "BETA_OPT_IN": {
-        "default": "No",
-        "skip": False,
-        "help": "",
-        "user_input": "Do you want to opt in for beta",
-    },
 }
 
 AVAILABLE_INPUTS = {}
@@ -88,10 +82,23 @@ MIN_DOCKER_VERSION = "19.0.0"
 MIN_DOCKER_COMPOSE_VERSION = "1.29.0"
 MIN_PODMAN_VERSION = "3.4.2"
 MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
+
+N = 4
+CE_VERSION_1 = f"CE v{N}-latest"
+CE_VERSION_2 = f"CE v{N-1}-latest"
+CE_VERSION_3 = "CE beta-latest"
+CORE_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
+UI_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
+CORE_VERSION_2_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-latest"
+UI_VERSION_2_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-latest"
+CORE_VERSION_BETA_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-beta"
+UI_VERSION_BETA_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-beta"
+
 CORE_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-latest"
 UI_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-latest"
 CORE_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-beta"
 UI_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-beta"
+
 GIT_PLUGIN_REPO = "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
 
 
@@ -485,6 +492,46 @@ def parse_proxy(url):
     if url.port is None:
         return f"{url.scheme}://{url.hostname}"
     return f"{url.scheme}://{url.hostname}:{url.port}"
+
+def ask_for_ce_version():
+    while True:
+        current_version = ""
+        if AVAILABLE_INPUTS.get("BETA_OPT_IN", "No").lower() in ["yes", "y"]:
+            current_version = CE_VERSION_3
+        elif CORE_VERSION_1_TAG == AVAILABLE_INPUTS.get("CORE_TAG", "").strip():
+            current_version = CE_VERSION_1
+        elif CORE_VERSION_2_TAG == AVAILABLE_INPUTS.get("CORE_TAG", "").strip():
+            current_version = CE_VERSION_2
+
+        if current_version == "":
+            print(f"\nAvailable Netskope CE Versions\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n")
+        else:
+            print(f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n")
+        n = input(
+            "Select the version you want to install (1/2/3): "
+        )
+        try:
+            n = int(n)
+            if n not in [1, 2, 3]:
+                print(f"{n} is not a valid selection.")
+                continue
+            break
+        except Exception as err:
+            print(err)
+            print(f"{n} is not a valid selection.")
+            continue
+    if n == 1:
+        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_1_TAG
+        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_1_TAG
+        AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
+    elif n == 2:
+        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_2_TAG
+        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_2_TAG
+        AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
+    elif n == 3:
+        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_BETA_TAG
+        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_BETA_TAG
+        AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
 
 
 def ask_for_initial_inputs():
@@ -1160,6 +1207,7 @@ def run():
         get_all_existed_env_variable()  # Get already exsting env variables
         pull_from_github()
 
+        ask_for_ce_version()
         ask_for_initial_inputs()
         check_prerequisites()
         migrate_mongo()
@@ -1371,13 +1419,13 @@ def run():
                     AVAILABLE_INPUTS["MAINTENANCE_PASSWORD"].strip("'")
                 )
 
-            if key == "BETA_OPT_IN":
-                if data.lower() in ["y", "yes"]:
-                    AVAILABLE_INPUTS["CORE_TAG"] = CORE_BETA_DEFAULT
-                    AVAILABLE_INPUTS["UI_TAG"] = UI_BETA_DEFAULT
-                else:
-                    AVAILABLE_INPUTS["CORE_TAG"] = CORE_DEFAULT
-                    AVAILABLE_INPUTS["UI_TAG"] = UI_DEFAULT
+            # if key == "BETA_OPT_IN":
+            #     if data.lower() in ["y", "yes"]:
+            #         AVAILABLE_INPUTS["CORE_TAG"] = CORE_BETA_DEFAULT
+            #         AVAILABLE_INPUTS["UI_TAG"] = UI_BETA_DEFAULT
+            #     else:
+            #         AVAILABLE_INPUTS["CORE_TAG"] = CORE_DEFAULT
+            #         AVAILABLE_INPUTS["UI_TAG"] = UI_DEFAULT
 
             if key == "ENABLE_TLS_V_1_2":
                 if data.lower() in ["y", "yes"]:
