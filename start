@@ -1,16 +1,29 @@
 #!/bin/sh
 
-docker-compose version &> /dev/null
-if [ $? -eq 127 ]; then
+if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1 ]; then 
     podman-compose version &> /dev/null
     if [ $? -eq 127 ]; then
-        echo "Could not find docker-compose or podman-compose"
+        echo "Could not find podman-compose"
+
         exit 1;
     else
         podman-compose -f podman-compose.yml pull && \
         podman-compose -f podman-compose.yml up -d
     fi
-else
-    docker-compose pull && \
-    docker-compose --compatibility up -d
+
+else 
+    docker-compose version &> /dev/null
+    if [ $? -eq 127 ]; then
+        podman-compose version &> /dev/null
+        if [ $? -eq 127 ]; then
+            echo "Could not find docker-compose or podman-compose"
+            exit 1;
+        else
+            podman-compose -f podman-compose.yml pull && \
+            podman-compose -f podman-compose.yml up -d
+        fi
+    else
+        docker-compose pull && \
+        docker-compose --compatibility up -d
+    fi
 fi
