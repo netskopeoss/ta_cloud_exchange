@@ -9,8 +9,10 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Minimum Requirements Below:
  	- 2 vCPU
  	- 4 GB of Memory
-	- 20 GB of free storage (40 GB recommended)
+	- 20 GB of storage
  - Please see the full documentation for scale numbers.
+ - Use latest docker version (https://docs.docker.com/engine/install/centos/)
+ - Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
 
 ## Install Procedure
  
@@ -32,10 +34,9 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 
 1. If you issue sudo ./start and you are presented with a help screen.
  
-   - Please download a newer version of docker-compose:<br>
-https://www.digitalocean.com/community/tutorials/how-to-install-docker-compose-on-ubuntu-18-04 <br>
-Check your version with `docker-compose --version`<br>
-
+   - Please download a newer version of docker-compose from:
+   https://docs.docker.com/compose/install/
+ 
 2. If bad gateway is received when you try to login:
 
    - Check if  step 2 was done correctly:
