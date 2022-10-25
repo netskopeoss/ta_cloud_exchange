@@ -164,7 +164,7 @@ out_docker_images(){
   fi
 }
 
-# --- Body --------------------------------------------------------
+# --- Body ---------------------------------------------------------
 #  SCRIPT LOGIC GOES HERE
 output_generators=(
     out_versions
