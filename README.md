@@ -7,7 +7,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Python 3
  - Zip (For the diagnose script)
  - Minimum Requirements Below:
- 	- 2 vCPU
+ 	- 4 vCPU
  	- 4 GB of Memory
 	- 20 GB of free storage (The check is done in /var)
  - Please see the full documentation for scale numbers.
