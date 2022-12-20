@@ -12,8 +12,6 @@ services:
     restart: always
     volumes:
       - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
-    ports:
-      - "15672:15672"
     logging:
       options:
         max-size: "10m"
@@ -43,15 +41,17 @@ services:
     image: index.docker.io/${CORE_TAG}
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/ca_certs:/usr/local/share/ca-certificates:z
     environment:
       - MONGO_CONNECTION_STRING=mongodb://cteadmin:${MAINTENANCE_PASSWORD_ESCAPED}@mongodb-primary:27017/cte
       - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD_ESCAPED}@rabbitmq-stats
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ENABLE_CELERY_BEAT=true
-      #- DOCKER_USERNAME=${DOCKER_USERNAME}
-      #- DOCKER_PASSWORD=${DOCKER_PASSWORD}
+      - DOCKER_USERNAME=${DOCKER_USERNAME:-}
+      - DOCKER_PASSWORD=${DOCKER_PASSWORD:-}
+      - CORE_TAG=${CORE_TAG}
+      - UI_TAG=${UI_TAG}
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - ANALYTICS_BASE_URL=https://reporting.netskope.tech
       - ANALYTICS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOiJjMDAyIn0.w8SVrTcDjk8PkR4IcbWGwOyf6-OWfCUyOoCTgZvqHqc
@@ -61,6 +61,8 @@ services:
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
       - BETA_OPT_IN=${BETA_OPT_IN}
+      # - UI_SERVICE_NAME=
+      # - THRESHOLD_FOR_IDLE_CHECK_IN_MINUTES=
     restart: always
     logging:
       options:
@@ -69,13 +71,12 @@ services:
     depends_on:
       - mongodb-primary
       - rabbitmq-stats
-    labels:
-      - com.centurylinklabs.watchtower.enable=true
   ui:
     image: index.docker.io/${UI_TAG}
     restart: always
     environment:
       - CE_API_URL=http://core
+      - CE_API_PORT=8000
       - TLS_VERSION=${ENABLE_TLS_V_1_2:-TLSv1.3}
     volumes:
       - ./data/ssl_certs:/tmp/ssl_certs:z
@@ -83,23 +84,6 @@ services:
       - ${UI_PORT}:3000
     links:
       - core
-    labels:
-      - com.centurylinklabs.watchtower.enable=true
-    logging:
-      options:
-        max-size: "10m"
-        max-file: "5"
-  watchtower:
-    image: index.docker.io/containrrr/watchtower:1.3.0
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      # - /root/.docker/config.json:/config.json
-    environment:
-      - WATCHTOWER_HTTP_API=true
-      - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
-      - WATCHTOWER_LABEL_ENABLE=true
-    restart: always
-    command: --http-api-update
     logging:
       options:
         max-size: "10m"
