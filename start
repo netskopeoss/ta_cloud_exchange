@@ -8,7 +8,7 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
             exit 1;
         else
             docker-compose pull && \
-            docker-compose --compatibility up -d
+            docker-compose --compatibility up --remove-orphans -d
         fi
     else
         podman-compose version &> /dev/null
@@ -33,6 +33,6 @@ else
         fi
     else
         docker-compose pull && \
-        docker-compose --compatibility up -d
+        docker-compose --compatibility up --remove-orphans -d
     fi
 fi
