@@ -9,7 +9,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Minimum Requirements Below:
  	- 4 vCPU
  	- 4 GB of Memory
-	- 20 GB of free storage (The check is done in /var)
+	- 40 GB of free storage (The check is done in /var)
  - Please see the full documentation for scale numbers.
  - Use latest docker version (https://docs.docker.com/engine/install/centos/)
  - Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
