@@ -15,10 +15,23 @@ touch $LOCK_FILE
 # --- Output functions --------------------------------------------
 
 RHEL=$(rpm --query redhat-release)
+MAINTENANCE_PASSWORD=$(cat .env | grep MAINTENANCE_PASSWORD=)
+MAINTENANCE_PASSWORD=${MAINTENANCE_PASSWORD#*=}
+MAINTENANCE_PASSWORD=`echo $MAINTENANCE_PASSWORD | tr -d "'"`
+core_check=false
+ui_check=false
+mongo_check=false
+rabbitmq_check=false
+mongo_running=false
+rabbitmq_running=false
 
-out_docker_core_logs() {
+out_docker_core_logs() { 
+  OUT="core.log"
   echo "----- Collecting Core Logs -----" > /dev/tty
-  OUT="core.log"  
+  if [ $core_check == "false" ]; then
+    echo "Core container is not up. Thus, not able to collect core logs." > /dev/tty
+    return 1
+  fi
   if [[ $RHEL: == *"redhat-release-"* ]]; then
     podman-compose -f podman-compose.yml logs core >& $OUT
   else  
@@ -30,6 +43,10 @@ out_docker_core_logs() {
 out_docker_ui_logs() {
   echo "----- Collecting UI Logs -----" > /dev/tty
   OUT="ui.log"
+  if [ $ui_check == "false" ]; then
+    echo "UI container is not up. Thus, not able to collect UI logs." > /dev/tty
+    return 1
+  fi
   if [[ $RHEL: == *"redhat-release-"* ]]; then
     podman-compose -f podman-compose.yml logs ui >& $OUT
   else  
@@ -41,6 +58,10 @@ out_docker_ui_logs() {
 out_docker_mongo_logs() {
   echo "----- Collecting Mongo Logs -----" > /dev/tty
   OUT="mongo.log"
+  if [ $mongo_check == "false" ]; then
+    echo "MongoDB container is not up. Thus, not able to collect MongoDB logs." > /dev/tty
+    return 1
+  fi
   if [[ $RHEL: == *"redhat-release-"* ]]; then
     podman-compose -f podman-compose.yml logs mongodb-primary >& $OUT
   else  
@@ -50,8 +71,12 @@ out_docker_mongo_logs() {
 }
 
 out_docker_rabbitmq_logs() {
-  echo "----- Collecting RabbitMq Logs -----" > /dev/tty
+  echo "----- Collecting Rabbitmq Logs -----" > /dev/tty
   OUT="rabbitmq.log"
+  if [ $rabbitmq_check == "false" ]; then
+    echo "Rabbitmq container is not up. Thus, not able to collect rabbitmq logs." > /dev/tty
+    return 1
+  fi
   if [[ $RHEL: == *"redhat-release-"* ]]; then
     podman-compose -f podman-compose.yml logs rabbitmq-stats >& $OUT
   else  
@@ -111,25 +136,20 @@ out_docker_stats() {
 out_versions() {
   echo "----- Collecting CE Version -----" > /dev/tty
   OUT="ce_platform_versions.txt"
-  if [ -z "$TOKEN" ]; 
-  then
-    echo "==> Error while collecting CE Version. Check hostname, username, or password." > /dev/tty
-    echo "Error while collecting CE Version. Check hostname, username, or password." >& $OUT
+  if [ $mongo_running == "false" ]; then
+    echo "MongoDB container is not running. Thus, not able to collect CE version." > /dev/tty
+    return 1
+  fi
+  if [[ $RHEL: == *"redhat-release-"* ]]; then
+    CE_VERSION=`podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="databaseVersion" : ")[^"]*'`
+    echo "> CE-Version: $CE_VERSION" >& $OUT
+    CE_UID=`podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="uid" : ")[^"]*'`
+    echo "> CE-INSTALLATION ID: $CE_UID" >> $OUT
   else
-    SETTINGS_RESPONSE=`curl -k --tlsv1.3 -s -X 'GET' \
-      "$HOST/api/settings" \
-      -H 'accept: application/json' \
-      -H "Authorization: Bearer $TOKEN"`
-
-    CORE_VERSION=`echo $SETTINGS_RESPONSE | grep -Po '"version":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
-    echo "> Core-Version: $CORE_VERSION" >& $OUT
-
-    DB_VERSION=`echo $SETTINGS_RESPONSE | grep -Po '"databaseVersion":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
-    echo "> DB-Version: $DB_VERSION" >> $OUT
-
-    INSTALLATION_ID=`echo $SETTINGS_RESPONSE | grep -Po '"uid":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
-    echo "> Installation ID: $INSTALLATION_ID" >> $OUT
-
+    CE_VERSION=`docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="databaseVersion" : ")[^"]*'`
+    echo "> CE-Version: $CE_VERSION" >& $OUT
+    CE_UID=`docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="uid" : ")[^"]*'`
+    echo "> CE-INSTALLATION ID: $CE_UID" >> $OUT
   fi
   echo $OUT
 }
@@ -137,15 +157,15 @@ out_versions() {
 out_ce_logs() {
   echo "----- Collecting CE Logs -----" > /dev/tty
   OUT="ce_platform_logs.log"
-  if [ -z "$TOKEN" ]; 
-  then
-    echo "==> Error while collecting CE Logs. Check hostname, username, or password." > /dev/tty
-    echo "Error while collecting CE Logs. Check hostname, username, or password." >& $OUT
+  if [ $mongo_running == "false" ]; then
+    echo "MongoDB container is not running. Thus, not able to collect CE logs." > /dev/tty
+    return 1
+  fi
+  if [[ $RHEL: == *"redhat-release-"* ]]; then
+    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e  "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >& $OUT
+
   else
-    curl -k --tlsv1.3 -s -X 'GET' \
-      "$HOST/api/logs/?skip=0&limit=10&ascending=true&aggregate=false&filters=%7B%7D&download=true" \
-      -H 'accept: application/json' \
-      -H "Authorization: Bearer $TOKEN" -o "$OUT"
+    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e  "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >& $OUT
   fi
   echo $OUT
 }
@@ -164,7 +184,52 @@ out_docker_images(){
   fi
 }
 
-# --- Body ---------------------------------------------------------
+out_kernel_logs(){
+  echo "----- Collecting Kernel Logs -----" > /dev/tty
+  OUT="kernel.log"
+  dmesg -k -T>& "$OUT"
+  echo $OUT
+}
+
+out_tenant_names(){
+  OUT="tenant_names.txt"
+  echo "----- Collecting Tenant Names -----" > /dev/tty
+  if [ $mongo_running == "false" ]; then
+    echo "MongoDB container is not running. Thus, not able to collect tenant names." > /dev/tty
+    return 1
+  fi
+  if [[ $RHEL: == *"redhat-release-"* ]]; then
+    echo "Name:" >& $OUT
+    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >> $OUT
+    echo "" >> $OUT
+    echo "Tenant's Name:" >> $OUT
+    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >> $OUT
+  else
+    echo "Name:" >& $OUT
+    docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >> $OUT
+    echo "" >> $OUT
+    echo "Tenant's Name:" >> $OUT
+    docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >> $OUT
+  fi
+  echo $OUT
+}
+
+out_rabbitmq_stats(){
+  OUT="rabbitmq_stats.txt"
+  echo "----- Collecting Rabbitmq Stats -----" > /dev/tty
+  if [ $rabbitmq_running == "false" ]; then
+    echo "Rabbitmq container is not running. Thus, not able to collect rabbitmq logs." > /dev/tty
+    return 1
+  fi
+  if [[ $RHEL: == *"redhat-release-"* ]]; then
+    podman-compose exec rabbitmq-stats curl -s -u user:$MAINTENANCE_PASSWORD "http://localhost:15672/api/queues/%2f/" >& $OUT
+  else
+    docker-compose exec -ti rabbitmq-stats curl -s -u user:$MAINTENANCE_PASSWORD "http://localhost:15672/api/queues/%2f/" >& $OUT
+  echo $OUT
+  fi
+}
+
+# --- Body --------------------------------------------------------
 #  SCRIPT LOGIC GOES HERE
 output_generators=(
     out_versions
@@ -176,9 +241,55 @@ output_generators=(
     out_docker_mongo_logs
     out_docker_rabbitmq_logs
     out_ce_logs
+    out_kernel_logs
+    out_tenant_names
+    out_rabbitmq_stats
 )
 
 outputs=()
+
+# check whether containers are up or not
+
+if [[ $RHEL: == *"redhat-release-"* ]]; then
+  if [ $(podman ps -q -a -f name="core") ]; then
+    core_check=true
+  fi
+  if [ $(podman ps -q -a -f name="ui") ]; then
+    ui_check=true
+  fi
+  if [ $(podman ps -q -a -f name="mongodb") ]; then
+    mongo_check=true
+    if [ $(podman ps -q -f status=running -f name="mongodb") ]; then
+      mongo_running=true
+    fi
+  fi
+  if [ $(podman ps -q -a -f name="rabbitmq") ]; then
+    rabbitmq_check=true
+    if [ $(podman ps -q -f status=running -f name="rabbitmq") ]; then
+      rabbitmq_running=true
+    fi
+  fi
+else
+  if [ $(docker ps -q -a -f name="core") ]; then
+    core_check=true
+  fi
+  if [ $(docker ps -q -a -f name="ui") ]; then
+    ui_check=true
+  fi
+  if [ $(docker ps -q -a -f name="mongodb") ]; then
+    mongo_check=true
+    if [ $(docker ps -q -f status=running -f name="mongodb") ]; then
+      mongo_running=true
+    fi
+  fi
+  if [ $(docker ps -q -a -f name="rabbitmq") ]; then
+    rabbitmq_check=true
+    if [ $(docker ps -q -f status=running -f name="rabbitmq") ]; then
+      rabbitmq_running=true
+    fi
+  fi
+fi
+
 
 # check whether zip is installed or not
 zip -v 1> /dev/null
@@ -193,18 +304,6 @@ if [ $? -eq 127 ]; then
   echo "curl is not installed"
   exit 1;
 fi
-
-# Take inputs from user
-read -p "Enter CE Host name (e.g. http(s)://<host-name>:<port>): " HOST
-read -p "Enter CE Admin Username: " USERNAME
-read -sp "Enter CE Admin Password: " PASSWORD
-echo ""
-
-# check whether credentials are correct or not by making an API call 
-RESPONSE=`curl -k --tlsv1.3 -s -X 'POST' \
-  "$HOST/api/auth" \
-  -d "grant_type=password&username=$USERNAME&password=$PASSWORD&scopes=read write me"`
-TOKEN=`echo $RESPONSE | grep -Po '"access_token":(\W+)?"\K[a-zA-Z0-9._-]+(?=")'`
 
 for i in ${output_generators[@]}; do
   output=`$i`

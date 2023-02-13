@@ -62,7 +62,7 @@ DEFAULT_INPUTS = {
         "skip": True,
         "help": "",
     },
-    "PULL_THREADS": {"default": 6, "skip": True, "help": ""},
+    "PULL_THREADS": {"default": 4, "skip": True, "help": ""},
     "MAX_WAIT_ON_LOCK_IN_MINUTES": {"default": 240, "skip": True, "help": ""},
     "ENABLE_TLS_V_1_2": {
         "default": "No",
@@ -70,6 +70,8 @@ DEFAULT_INPUTS = {
         "help": "",
         "user_input": "Do you want to enable TLSv1.2 along with TLSv1.3 for CE UI",
     },
+    "REQUESTS_TIMEOUT": {"default": 300, "skip": True, "help": ""},
+    "POPEN_TIMEOUT": {"default": 1800, "skip": True, "help": ""},
 }
 
 AVAILABLE_INPUTS = {}
@@ -181,6 +183,7 @@ def create_env_if_not_exist():
 def get_all_existed_env_variable():
     AVAILABLE_INPUTS["HTTP_PROXY"] = ""
     AVAILABLE_INPUTS["HTTPS_PROXY"] = ""
+    AVAILABLE_INPUTS["DESTINATION_PATH"] = ""
 
     try:
         with open(".env", "r") as f:
@@ -244,6 +247,10 @@ def create_self_signed_ssl_certs():
         out, err = p.communicate()
         if p.returncode == 0:
             print(f"{err.decode('utf-8')}\n")
+            command = "sudo chmod 666 data/ssl_certs/cte_cert.crt"
+            set_directory_permission("data/ssl_certs/cte_cert.crt", command)
+            command_key = "sudo chmod 666 data/ssl_certs/cte_cert_key.key"
+            set_directory_permission("data/ssl_certs/cte_cert_key.key", command_key)
         else:
             raise Exception(f"{err.decode('utf-8')}\n")
     except Exception as e:
@@ -833,18 +840,18 @@ def check_and_apply_file_permissions():
         else:
             if platform.system().lower() not in ["darwin"]:
                 if (
-                    stat("data/mongo-data").st_uid == 1001
-                    and stat("data/mongo-data").st_gid == 1001
+                    stat("data/mongo-data").st_uid == 999
+                    and stat("data/mongo-data").st_gid == 999
                 ):
                     print_pass(
-                        f"Verified owner of data/mongo-data is user with uid 1001"
+                        f"Verified owner of data/mongo-data is user with uid 999"
                     )
                     CHECKS["MONGO"] = Status.PASS
                 else:
-                    command = "sudo chown -R 1001:1001 data/mongo-data"
+                    command = "sudo chown -R 999:999 data/mongo-data"
                     set_directory_permission("data/mongo-data", command)
                     print_pass(
-                        f"Owner of data/mongo-data is not accurate... Changing owner of data/mongo-data to user with uid 1001"
+                        f"Owner of data/mongo-data is not accurate... Changing owner of data/mongo-data to user with uid 999"
                     )
                     CHECKS["MONGO"] = Status.PASS
 
@@ -892,26 +899,46 @@ def check_and_apply_file_permissions():
             )
             CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
         else:
-            file_perms = oct(stat("data/custom_plugins").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[3]) & 2)
-                and (int(file_perms[3]) & 1)
-                and (int(file_perms[4]) & 4)
-                and (int(file_perms[4]) & 1)
-            ):
-                print_pass(f"Verified file permissions of data/custom_plugins")
+            if platform.system().lower() not in ["darwin"]:
+                if (
+                    stat("data/custom_plugins").st_uid == 1001
+                    and stat("data/custom_plugins").st_gid == 1001
+                ):
+                    print_pass(
+                        f"Verified owner of data/custom_plugins is user with uid 1001"
+                    )
+                else:
+                    command = "sudo chown -R 1001:1001 data/custom_plugins"
+                    set_directory_permission("data/custom_plugins", command)
+                    print_pass(
+                        f"Owner of data/custom_plugins is not accurate... Changing owner of data/custom_plugins to user with uid 1001"
+                    )
                 CHECKS["CUSTOM_PLUGINS"] = Status.PASS
-            else:
-                command = "sudo chmod -R 775 data/custom_plugins"
-                set_directory_permission("data/custom_plugins", command)
-                print_pass(
-                    f"File permissions of data/custom_plugins are not accurate... Adding read/write/execute permissions to data/custom_plugins"
+
+            try:
+                file_perms = oct(stat("data/custom_plugins").st_mode & 0o777)
+                if (
+                    (int(file_perms[2]) & 4)
+                    and (int(file_perms[2]) & 2)
+                    and (int(file_perms[2]) & 1)
+                    and (int(file_perms[3]) & 4)
+                    and (int(file_perms[4]) & 4)
+                ):
+                    print_pass(f"Verified file permissions of data/custom_plugins")
+                    CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
+                else:
+                    command = "sudo chmod -R 744 data/custom_plugins"
+                    set_directory_permission("data/custom_plugins", command)
+                    print_pass(
+                        f"File permissions of data/custom_plugins are not accurate... Adding read/write permissions to data/custom_plugins"
+                    )
+                    CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
+            except Exception as e:
+                print_fail(
+                    f"Error occurred while verifying file permissions for data/custom_plugins"
                 )
-                CHECKS["CUSTOM_PLUGINS"] = Status.PASS
+                CHECKS["CUSTOM_PLUGINS_FILE"] = Status.FAIL
+
     except Exception as e:
         # print(e)
         print_fail(
@@ -927,6 +954,23 @@ def check_and_apply_file_permissions():
             )
             CHECKS["SSL_CERTS"] = Status.FAIL
         else:
+            if platform.system().lower() not in ["darwin"]:
+                if (
+                    stat("data/ssl_certs").st_uid == 1001
+                    and stat("data/ssl_certs").st_gid == 1001
+                ):
+                    print_pass(
+                        f"Verified owner of data/ssl_certs is user with uid 1001"
+                    )
+                    CHECKS["SSL_CERTS"] = Status.PASS
+                else:
+                    command = "sudo chown -R 1001:1001 data/ssl_certs"
+                    set_directory_permission("data/ssl_certs", command)
+                    print_pass(
+                        f"Owner of data/ssl_certs is not accurate... Changing owner of data/ssl_certs to user with uid 1001"
+                    )
+                    CHECKS["SSL_CERTS"] = Status.PASS
+
             file_perms = oct(stat("data/ssl_certs").st_mode & 0o777)
             if (
                 (int(file_perms[2]) & 4)
@@ -1013,6 +1057,40 @@ def check_and_apply_file_permissions():
             f"Error occurred while verifying file permissions for data/rabbitmq"
         )
         CHECKS["RABBITMQ"] = Status.FAIL
+
+    try:
+        if not os.path.exists("data/ca_certs"):
+            print_fail(
+                f"Could not locate data/ca_certs directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
+            )
+            CHECKS["ca_certs"] = Status.FAIL
+        else:
+            file_perms = oct(stat("data/ca_certs").st_mode & 0o777)
+            if (
+                (int(file_perms[2]) & 4)
+                and (int(file_perms[2]) & 2)
+                and (int(file_perms[2]) & 1)
+                and (int(file_perms[3]) & 4)
+                and (int(file_perms[3]) & 2)
+                and (int(file_perms[3]) & 1)
+                and (int(file_perms[4]) & 4)
+                and (int(file_perms[4]) & 2)
+                and (int(file_perms[4]) & 1)
+            ):
+                print_pass(f"Verified file permissions of data/ca_certs")
+                CHECKS["ca_certs"] = Status.PASS
+            else:
+                command = "sudo chmod -R 777 data/ca_certs"
+                set_directory_permission("data/ca_certs", command)
+                print_pass(
+                    f"File permissions of data/ca_certs are not accurate... Adding read permissions to data/ca_certs"
+                )
+                CHECKS["ca_certs"] = Status.PASS
+    except Exception as e:
+        print_fail(
+            f"Error occurred while verifying file permissions for data/ca_certs"
+        )
+        CHECKS["ca_certs"] = Status.FAIL
 
     # start script
     try:
@@ -1106,13 +1184,16 @@ def check_port(port):
 
 
 def pull_from_github():
-    print("\nChecking for the updates...")
+    myenv = os.environ.copy()
+    myenv["LC_ALL"] = "C"
+    print("\nPulling updates from github.com...")
     pr1 = subprocess.Popen(
         ['git', 'diff', '-G.'],
         cwd=os.getcwd(),
         shell=False,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env=myenv
     )
     (out, error) = pr1.communicate()
     out = out.decode("utf-8")
@@ -1127,6 +1208,7 @@ def pull_from_github():
             shell=True,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            env=myenv
         )
         (out, error) = pr1.communicate()
         error = error.decode("utf-8")
@@ -1180,7 +1262,53 @@ def migrate_mongo():
             f"Could not locate data/mongo-data directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
         )
         exit(1)
-
+        
+def copy_env():
+    while True:
+        if AVAILABLE_INPUTS["DESTINATION_PATH"] == "":
+            destination = input("> Enter the destination path (e.g. './backup_env'): ").strip()
+        else:
+            destination = input(f"\n> Enter the destination path for backup of .env (Current: \"{AVAILABLE_INPUTS['DESTINATION_PATH']}\"): ").strip()
+        destination = AVAILABLE_INPUTS["DESTINATION_PATH"] if destination == "" else destination
+        AVAILABLE_INPUTS["DESTINATION_PATH"] = destination
+        put_env_variable(AVAILABLE_INPUTS)
+        command = f"cp -r .env {destination}"
+        try:
+            p = subprocess.Popen(
+                command.split(),
+                shell=False,
+                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+            )
+            out, err = p.communicate()
+            if len(err) <= 0:
+                print("backup completed...")
+                break
+            else:
+                AVAILABLE_INPUTS["DESTINATION_PATH"] == ""
+                raise Exception(err.decode("utf-8"))
+        except Exception as e:
+            if p:
+                p.kill()
+            print(
+                f"Error occurred while taking backup. Error: {e}"
+            )
+            continue
+        
+def take_env_backup():
+    if AVAILABLE_INPUTS["DESTINATION_PATH"] == "":
+        isBackup = (
+            input(
+                "> Do you want to take backup of .env file? [y/n]: "
+            )
+            .strip()
+            .lower()
+        )
+        if isBackup == "y" or isBackup == "yes":
+            copy_env()
+    else:
+        copy_env()
 
 def run():
     try:
@@ -1305,6 +1433,8 @@ def run():
                             data = "a"
                             confirm_data = "b"
                             while data != confirm_data or len(data) == 0:
+                                data = "a"
+                                confirm_data = "b"
                                 data = getpass(f"> {user_input}: ").strip()
                                 if data == "":
                                     print(
@@ -1433,7 +1563,28 @@ def run():
                 else:
                     data = "TLSv1.3"
             AVAILABLE_INPUTS[key] = data
+
+            if key == "PULL_THREADS":
+                AVAILABLE_INPUTS[key] = item.get("default", 4)
+
+        code_tag_version = AVAILABLE_INPUTS.get("CORE_TAG", "").strip()
+        if not "3-latest" in code_tag_version:
+          # len == 1 as .gitkeep file will always be there in the ca_certs folder
+          if (len(os.listdir('data/ca_certs')) == 1):
+            # Ask for custom ca certs
+            custom_ssl_confirm = (
+                input(
+                    "\n> Do you want to provide custom CA certs? (y/n): "
+                )
+                .strip()
+                .lower()
+            )
+            if custom_ssl_confirm in ["y", "yes"]:
+                print("\n\033[1;37mPlease add your certs to ./data/ca_certs and Re-run the script.\033[0;37m")
+          else:
+            print("CA certificate successfully found in the /data/ca_certs folder.")
         put_env_variable(AVAILABLE_INPUTS)
+        take_env_backup()
 
         if isRedHat():
             print(
