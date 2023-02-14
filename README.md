@@ -9,7 +9,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Minimum Requirements Below:
  	- 4 vCPU
  	- 4 GB of Memory
-	- 40 GB of free storage (The check is done in /var)
+	- 40 GB of storage
  - Please see the full documentation for scale numbers.
  - Use latest docker version (https://docs.docker.com/engine/install/centos/)
  - Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
@@ -22,11 +22,10 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br> 
 	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
-	a.`cd ta_cloud_exchange`<br>
-	b.`python3 ./setup`<br>
- 3. Launch Cloud Exchange<br>
- 	a. `./start`<br>
- 4. Open Browser to `http(s)://<host ip address>`<br>
+	a. `sudo ./setup`<br>
+ 4. Launch Cloud Exchange 3<br>
+ 	a. `sudo ./start`<br>
+ 5. Open Browser to `http(s)://<host ip address>`<br>
 	 
 Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory. The name of the certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
 
@@ -55,4 +54,5 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 3. If you get `SyntaxError: invalid syntax` while running `sudo ./setup`
    - Try to run `sudo python3 setup`
 
+ 
  
