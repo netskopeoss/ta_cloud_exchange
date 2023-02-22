@@ -7,7 +7,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Python 3
  - Zip (For the diagnose script)
  - Minimum Requirements Below:
- 	- 4 vCPU
+ 	- 4 vCPU (from CE v4.1.0 onwards, only x86 architecture with AVX is supported)
  	- 4 GB of Memory
 	- 40 GB of storage
  - Please see the full documentation for scale numbers.
@@ -22,7 +22,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br> 
 	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
-	a. `sudo ./setup`<br>
+	a. `sudo python3 ./setup`<br>
  4. Launch Cloud Exchange 3<br>
  	a. `sudo ./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
