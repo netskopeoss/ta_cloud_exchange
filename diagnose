@@ -1,12 +1,18 @@
 #!/bin/bash
 
+spinner=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
+done=⠿
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+
 SUBJECT=some-unique-id
 
 # --- Locks -------------------------------------------------------
 LOCK_FILE=/tmp/$SUBJECT.lock
 if [ -f "$LOCK_FILE" ]; then
-   echo "Script is already running"
-   exit
+  echo "Script is already running"
+  exit
 fi
 
 trap "rm -f $LOCK_FILE" EXIT
@@ -14,250 +20,436 @@ touch $LOCK_FILE
 
 # --- Output functions --------------------------------------------
 
-RHEL=$(rpm --query redhat-release)
+RHEL=$(hostnamectl | grep "Operating System:" | sed 's/Operating System://')
 MAINTENANCE_PASSWORD=$(cat .env | grep MAINTENANCE_PASSWORD=)
 MAINTENANCE_PASSWORD=${MAINTENANCE_PASSWORD#*=}
-MAINTENANCE_PASSWORD=`echo $MAINTENANCE_PASSWORD | tr -d "'"`
+MAINTENANCE_PASSWORD=$(echo $MAINTENANCE_PASSWORD | tr -d "'")
 core_check=false
+core_running=false
 ui_check=false
 mongo_check=false
 rabbitmq_check=false
-mongo_running=false
 rabbitmq_running=false
 
-out_docker_core_logs() { 
+check_mongo_running() {
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    if [ $(podman ps -q -a -f name="mongodb") ]; then
+      retry=0
+      while [ $retry -lt 4 ]; do
+        if [ $(podman ps -q -f status=running -f name="mongodb") ]; then
+          echo "true"
+          exit
+        else
+          echo -ne "\r$yellow$done    $1Error occured while connecting to Mongodb Container. Retries: $retry.\n\033[0m" >/dev/tty
+          sleep 2
+          ((retry++))
+        fi
+      done
+    fi
+    echo "false"
+  else
+    if [ $(docker ps -q -a -f name="mongodb") ]; then
+      retry=0
+      while [ $retry -lt 4 ]; do
+        if [ $(docker ps -q -f status=running -f name="mongodb") ]; then
+          echo "true"
+          exit
+        else
+          echo -ne "\r$yellow$done    $1Error occured while connecting to Mongodb Container. Retries: $retry.\n\033[0m" >/dev/tty
+          sleep 2
+          ((retry++))
+        fi
+      done
+    fi
+    echo "false"
+  fi
+}
+
+trap_ctrlC() {
+  kill -9 $1
+  exit 2
+}
+
+spin() {
+  while [ 1 ]; do
+    for i in "${spinner[@]}"; do
+      echo -ne "\r$i    $1Collecting" >/dev/tty
+      sleep 0.1
+    done
+  done
+}
+
+stop_spin() {
+  trap "kill -9 $2" $(seq 0 15)
+  echo -ne "\033[2K" >/dev/tty
+  if [[ $3 == *"Error"* ]]; then
+    echo -ne "\r$red$done    $1$3\n\033[0m" >/dev/tty
+  else
+    echo -ne "\r$green$done    $1Collected\n\033[0m" >/dev/tty
+  fi
+}
+
+out_docker_core_logs() {
   OUT="core.log"
-  echo "----- Collecting Core Logs -----" > /dev/tty
+  spin "Core Logs\t\t" &
+  pid=$!
   if [ $core_check == "false" ]; then
-    echo "Core container is not up. Thus, not able to collect core logs." > /dev/tty
+    stop_spin "Core Logs\t\t" $pid "Error: Core container is not up. Thus, not able to collect Core logs."
     return 1
   fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    podman-compose -f podman-compose.yml logs core >& $OUT
-  else  
-    docker-compose logs --no-color core >& $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose -f podman-compose.yml logs core >&$OUT
+  else
+    docker-compose logs --no-color core >&$OUT
   fi
+  stop_spin "Core Logs\t\t" $pid "success"
   echo $OUT
 }
 
 out_docker_ui_logs() {
-  echo "----- Collecting UI Logs -----" > /dev/tty
   OUT="ui.log"
+  spin "UI Logs\t\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
   if [ $ui_check == "false" ]; then
-    echo "UI container is not up. Thus, not able to collect UI logs." > /dev/tty
+    stop_spin "UI Logs\t\t" $pid "Error: UI container is not up. Thus, not able to collect UI logs."
     return 1
   fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    podman-compose -f podman-compose.yml logs ui >& $OUT
-  else  
-    docker-compose logs --no-color ui >& $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose -f podman-compose.yml logs ui >&$OUT
+  else
+    docker-compose logs --no-color ui >&$OUT
   fi
+  stop_spin "UI Logs\t\t" $pid "success"
   echo $OUT
 }
 
 out_docker_mongo_logs() {
-  echo "----- Collecting Mongo Logs -----" > /dev/tty
   OUT="mongo.log"
+  spin "MongoDB Logs\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
   if [ $mongo_check == "false" ]; then
-    echo "MongoDB container is not up. Thus, not able to collect MongoDB logs." > /dev/tty
+    stop_spin "MongoDB Logs\t" $pid "Error: MongoDB container is not up. Thus, not able to collect MongoDB logs."
     return 1
   fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    podman-compose -f podman-compose.yml logs mongodb-primary >& $OUT
-  else  
-    docker-compose logs --no-color mongodb-primary >& $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose -f podman-compose.yml logs mongodb-primary >&$OUT
+  else
+    docker-compose logs --no-color mongodb-primary >&$OUT
   fi
+  stop_spin "MongoDB Logs\t" $pid "success"
   echo $OUT
 }
 
 out_docker_rabbitmq_logs() {
-  echo "----- Collecting Rabbitmq Logs -----" > /dev/tty
   OUT="rabbitmq.log"
+  spin "RabbitMQ Logs\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
   if [ $rabbitmq_check == "false" ]; then
-    echo "Rabbitmq container is not up. Thus, not able to collect rabbitmq logs." > /dev/tty
+    stop_spin "RabbitMQ Logs\t" $pid "Error: Rabbitmq container is not up. Thus, not able to collect rabbitmq logs."
     return 1
   fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    podman-compose -f podman-compose.yml logs rabbitmq-stats >& $OUT
-  else  
-    docker-compose logs --no-color rabbitmq-stats >& $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose -f podman-compose.yml logs rabbitmq-stats >&$OUT
+  else
+    docker-compose logs --no-color rabbitmq-stats >&$OUT
   fi
+  stop_spin "RabbitMQ Logs\t" $pid "success"
   echo $OUT
 }
 
 out_stats() {
-  echo "----- Collecting Machine Stats -----" > /dev/tty
   OUT="system_stats.txt"
-  echo "> lscpu" >& $OUT
-  lscpu >> $OUT
-  echo "----------------------------------------------------------------------------------" >> $OUT
-  echo "> free -h" >> $OUT
-  free -h >> $OUT
-  echo "----------------------------------------------------------------------------------" >> $OUT
-  echo "> df -h" >> $OUT
-  df -h >> $OUT
+  spin "System Stats\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  echo -e "\n----------------------------------------------------------------------------------" >&$OUT
+  echo " OS details" >>$OUT
+  echo "> cat /etc/os-release" >>$OUT
+  cat /etc/os-release >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo " Kernel Version" >>$OUT
+  echo "> uname -r" >>$OUT
+  uname -r >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo " Time details" >>$OUT
+  echo "> timedatectl" >>$OUT
+  timedatectl >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo " Uptime of the Host" >>$OUT
+  echo "> uptime" >>$OUT
+  uptime >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo "> lscpu" >>$OUT
+  lscpu >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo "> free -h" >>$OUT
+  free -h >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo "> df -h" >>$OUT
+  df -h >>$OUT
+  stop_spin "System Stats\t" $pid "success"
   echo $OUT
 }
 
 out_docker_stats() {
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    echo "----- Collecting Podman Stats -----" > /dev/tty
-    OUT="podman_stats.txt"   
-    echo "> podman-compose version" >& $OUT
-    podman-compose version &>> $OUT
-    echo "---------------------------------------------------------------------------------" >> $OUT
-    echo "> podman ps --all" >> $OUT
-    podman ps --all >> $OUT
-    echo "---------------------------------------------------------------------------------" >> $OUT
-    echo "> podman system info" >> $OUT
-    podman system info >> $OUT
-    echo "---------------------------------------------------------------------------------" >> $OUT
-    echo "> podman system df" >> $OUT
-    podman system df >> $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    OUT="podman_stats.txt"
+    spin "Podman Stats\t" &
+    pid=$!
+    trap "trap_ctrlC $pid" 2
+    echo "> podman-compose version" >&$OUT
+    podman-compose version &>>$OUT
+    echo "---------------------------------------------------------------------------------" >>$OUT
+    echo "> podman ps --all" >>$OUT
+    podman ps --all >>$OUT
+    echo "---------------------------------------------------------------------------------" >>$OUT
+    echo "> podman system info" >>$OUT
+    podman system info >>$OUT
+    echo "---------------------------------------------------------------------------------" >>$OUT
+    echo "> podman system df" >>$OUT
+    podman system df >>$OUT
+    stop_spin "Podman Stats\t" $pid "success"
     echo $OUT
   else
-    echo "----- Collecting Docker Stats -----" > /dev/tty
     OUT="docker_stats.txt"
-    echo "> docker ps --all" >& $OUT
-    docker ps --all >> $OUT
-    echo "---------------------------------------------------------------------------------" >> $OUT
-    echo "> docker system info" >> $OUT
-    docker system info >> $OUT
-    echo "---------------------------------------------------------------------------------" >> $OUT
-    echo "> docker-compose version" >> $OUT
-    docker-compose version >> $OUT
-    echo "---------------------------------------------------------------------------------" >> $OUT
-    echo "> docker system df" >> $OUT
-    docker system df >> $OUT
+    spin "Docker Stats\t" &
+    pid=$!
+    trap "trap_ctrlC $pid" 2
+    echo "> docker ps --all" >&$OUT
+    docker ps --all >>$OUT
+    echo "---------------------------------------------------------------------------------" >>$OUT
+    echo "> docker system info" >>$OUT
+    docker system info >>$OUT
+    echo "---------------------------------------------------------------------------------" >>$OUT
+    echo "> docker-compose version" >>$OUT
+    docker-compose version >>$OUT
+    echo "---------------------------------------------------------------------------------" >>$OUT
+    echo "> docker system df" >>$OUT
+    docker system df >>$OUT
+    stop_spin "Docker Stats\t" $pid "success"
     echo $OUT
   fi
 }
 
-out_versions() {
-  echo "----- Collecting CE Version -----" > /dev/tty
-  OUT="ce_platform_versions.txt"
-  if [ $mongo_running == "false" ]; then
-    echo "MongoDB container is not running. Thus, not able to collect CE version." > /dev/tty
+out_platform_details() {
+  OUT="ce_platform_details.txt"
+  spin "CE Details\t\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  if [[ $(check_mongo_running "CE Details\t\t") == "false" ]]; then
+    stop_spin "CE Details\t\t" $pid "Error: MongoDB container is not running. Thus, not able to collect CE Details."
     return 1
   fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    CE_VERSION=`podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="databaseVersion" : ")[^"]*'`
-    echo "> CE-Version: $CE_VERSION" >& $OUT
-    CE_UID=`podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="uid" : ")[^"]*'`
-    echo "> CE-INSTALLATION ID: $CE_UID" >> $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    SETTINGS=$(podman-compose -f podman-compose.yml exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
+    CE_VERSION=$(echo $SETTINGS | grep -Po '(?<="databaseVersion" : ")[^"]*')
+    echo "------- CE Platform Details -------" >&$OUT
+    echo "> CE-Version: $CE_VERSION" >>$OUT
+
+    CE_UID=$(echo $SETTINGS | grep -Po '(?<="uid" : ")[^"]*')
+    echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
+
+    echo -e "\n------- Proxy Details -------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- Plugin Repo Details -------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- CTE Plugin Details --------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- CTO Plugin Details --------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- URE Plugin Details --------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- ARE Plugin Details --------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- CLS Plugin Details --------" >>$OUT
+    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
   else
-    CE_VERSION=`docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="databaseVersion" : ")[^"]*'`
-    echo "> CE-Version: $CE_VERSION" >& $OUT
-    CE_UID=`docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()" | grep -Po '(?<="uid" : ")[^"]*'`
-    echo "> CE-INSTALLATION ID: $CE_UID" >> $OUT
+    SETTINGS=$(docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
+    CE_VERSION=$(echo $SETTINGS | grep -Po '(?<="databaseVersion" : ")[^"]*')
+    echo "------- CE Platform Details -------" >&$OUT
+    echo "> CE-Version: $CE_VERSION" >>$OUT
+
+    CE_UID=$(echo $SETTINGS | grep -Po '(?<="uid" : ")[^"]*')
+    echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
+
+    echo -e "\n------- Proxy Details -------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- Plugin Repo Details -------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- CTE Plugin Details --------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- CTO Plugin Details --------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- URE Plugin Details --------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- ARE Plugin Details --------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- CLS Plugin Details --------" >>$OUT
+    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
   fi
+  stop_spin "CE Details\t\t" $pid "success"
   echo $OUT
 }
 
 out_ce_logs() {
-  echo "----- Collecting CE Logs -----" > /dev/tty
   OUT="ce_platform_logs.log"
-  if [ $mongo_running == "false" ]; then
-    echo "MongoDB container is not running. Thus, not able to collect CE logs." > /dev/tty
+  spin "CE Logs\t\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  if [[ $(check_mongo_running "CE Logs\t\t") == "false" ]]; then
+    stop_spin "CE Logs\t\t" $pid "Error: MongoDB container is not running. Thus, not able to collect CE Logs."
     return 1
   fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e  "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >& $OUT
-
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >&$OUT
   else
-    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e  "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >& $OUT
+    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >&$OUT
   fi
+  stop_spin "CE Logs\t\t" $pid "success"
   echo $OUT
 }
 
-out_docker_images(){
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    echo "----- Collecting Podman Images -----" > /dev/tty
+out_docker_images() {
+  if [[ $RHEL: == *"Red Hat"* ]]; then
     OUT="podman_images.txt"
-    podman inspect --format='{{.Id}} {{.Name}} {{.Image}}' $(podman ps -aq) >& "$OUT"
+    spin "Podman Images\t" &
+    pid=$!
+    trap "trap_ctrlC $pid" 2
+    podman inspect --format='{{.Id}} {{.Name}} {{.Image}}' $(podman ps -aq) >&"$OUT"
+    stop_spin "Podman Images\t" $pid "success"
     echo $OUT
-  else 
-    echo "----- Collecting Docker Images -----" > /dev/tty
-    OUT="docker_images.txt"
-    docker inspect --format='{{.Id}} {{.Name}} {{.Image}}' $(docker ps -aq) >& "$OUT"
-    echo $OUT
-  fi
-}
-
-out_kernel_logs(){
-  echo "----- Collecting Kernel Logs -----" > /dev/tty
-  OUT="kernel.log"
-  dmesg -k -T>& "$OUT"
-  echo $OUT
-}
-
-out_tenant_names(){
-  OUT="tenant_names.txt"
-  echo "----- Collecting Tenant Names -----" > /dev/tty
-  if [ $mongo_running == "false" ]; then
-    echo "MongoDB container is not running. Thus, not able to collect tenant names." > /dev/tty
-    return 1
-  fi
-  if [[ $RHEL: == *"redhat-release-"* ]]; then
-    echo "Name:" >& $OUT
-    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >> $OUT
-    echo "" >> $OUT
-    echo "Tenant's Name:" >> $OUT
-    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >> $OUT
   else
-    echo "Name:" >& $OUT
-    docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >> $OUT
-    echo "" >> $OUT
-    echo "Tenant's Name:" >> $OUT
-    docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >> $OUT
+    OUT="docker_images.txt"
+    spin "Docker Images\t" &
+    pid=$!
+    trap "trap_ctrlC $pid" 2
+    docker inspect --format='{{.Id}} {{.Name}} {{.Image}}' $(docker ps -aq) >&"$OUT"
+    stop_spin "Docker Images\t" $pid "success"
+    echo $OUT
   fi
+}
+
+out_kernel_logs() {
+  OUT="kernel.log"
+  spin "Kernel Logs\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  dmesg -k -T >&"$OUT"
+  stop_spin "kernel Logs\t" $pid "success"
   echo $OUT
 }
 
-out_rabbitmq_stats(){
-  OUT="rabbitmq_stats.txt"
-  echo "----- Collecting Rabbitmq Stats -----" > /dev/tty
-  if [ $rabbitmq_running == "false" ]; then
-    echo "Rabbitmq container is not running. Thus, not able to collect rabbitmq logs." > /dev/tty
+out_tenant_names() {
+  OUT="tenant_names.txt"
+  spin "Tenant Names\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  if [[ $(check_mongo_running "Tenant Names\t") == "false" ]]; then
+    stop_spin "Tenant Names\t" $pid "Error: MongoDB container is not running. Thus, not able to collect Tenant Names."
     return 1
   fi
-  curl -s -u user:$MAINTENANCE_PASSWORD "http://localhost:15672/api/queues/%2f/" &> $OUT
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    echo "Name:" >&$OUT
+    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
+    echo "" >>$OUT
+    echo "Tenant's Name:" >>$OUT
+    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
+  else
+    echo "Name:" >&$OUT
+    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
+    echo "" >>$OUT
+    echo "Tenant's Name:" >>$OUT
+    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
+  fi
+  stop_spin "Tenant Names\t" $pid "success"
+  echo $OUT
+}
+
+out_rabbitmq_stats() {
+  OUT="rabbitmq_stats.txt"
+  spin "RabbitMQ Stats\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  if [ $rabbitmq_running == "false" ]; then
+    stop_spin "RabbitMQ Stats\t" $pid "Error: Rabbitmq container is not running. Thus, not able to collect rabbitmq logs."
+    return 1
+  fi
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose -f podman-compose.yml exec rabbitmq-stats rabbitmqctl list_queues name messages message_bytes message_bytes_persistent | sed -e '/podman/d' -e '/exit code/d' >&$OUT
+  else
+    docker-compose exec rabbitmq-stats rabbitmqctl list_queues name messages message_bytes message_bytes_persistent >&$OUT
+  fi
+  stop_spin "RabbitMQ Stats\t" $pid "success"
+  echo $OUT
+}
+
+out_worker_details() {
+  OUT="worker_status.txt"
+  spin "Worker Status\t" &
+  pid=$!
+  trap "trap_ctrlC $pid" 2
+  if [ $core_running == "false" ]; then
+    stop_spin "Worker Status\t" $pid "Error: Core container is not running. Thus, not able to collect Worker Status."
+    return 1
+  fi
+  if [[ $RHEL: == *"Red Hat"* ]]; then
+    podman-compose -f podman-compose.yml exec core celery -A netskope.common.celery.main inspect active | sed -e '/podman/d' -e '/exit code/d' >&$OUT
+  else
+    docker-compose exec core celery -A netskope.common.celery.main inspect active >&$OUT
+  fi
+  stop_spin "Worker Status\t" $pid "success"
   echo $OUT
 }
 
 # --- Body --------------------------------------------------------
 #  SCRIPT LOGIC GOES HERE
 output_generators=(
-    out_versions
-    out_stats
-    out_docker_stats
-    out_docker_images
-    out_docker_core_logs
-    out_docker_ui_logs
-    out_docker_mongo_logs
-    out_docker_rabbitmq_logs
-    out_ce_logs
-    out_kernel_logs
-    out_tenant_names
-    out_rabbitmq_stats
+  out_platform_details
+  out_stats
+  out_docker_stats
+  out_docker_images
+  out_docker_core_logs
+  out_docker_ui_logs
+  out_docker_mongo_logs
+  out_docker_rabbitmq_logs
+  out_ce_logs
+  out_kernel_logs
+  out_tenant_names
+  out_rabbitmq_stats
+  out_worker_details
 )
 
 outputs=()
 
 # check whether containers are up or not
 
-if [[ $RHEL: == *"redhat-release-"* ]]; then
+if [[ $RHEL: == *"Red Hat"* ]]; then
   if [ $(podman ps -q -a -f name="core") ]; then
     core_check=true
+    if [ $(podman ps -q -f status=running -f name="core") ]; then
+      core_running=true
+    fi
   fi
   if [ $(podman ps -q -a -f name="ui") ]; then
     ui_check=true
   fi
   if [ $(podman ps -q -a -f name="mongodb") ]; then
     mongo_check=true
-    if [ $(podman ps -q -f status=running -f name="mongodb") ]; then
-      mongo_running=true
-    fi
   fi
   if [ $(podman ps -q -a -f name="rabbitmq") ]; then
     rabbitmq_check=true
@@ -268,15 +460,15 @@ if [[ $RHEL: == *"redhat-release-"* ]]; then
 else
   if [ $(docker ps -q -a -f name="core") ]; then
     core_check=true
+    if [ $(docker ps -q -f status=running -f name="core") ]; then
+      core_running=true
+    fi
   fi
   if [ $(docker ps -q -a -f name="ui") ]; then
     ui_check=true
   fi
   if [ $(docker ps -q -a -f name="mongodb") ]; then
     mongo_check=true
-    if [ $(docker ps -q -f status=running -f name="mongodb") ]; then
-      mongo_running=true
-    fi
   fi
   if [ $(docker ps -q -a -f name="rabbitmq") ]; then
     rabbitmq_check=true
@@ -286,29 +478,23 @@ else
   fi
 fi
 
-
 # check whether zip is installed or not
-zip -v 1> /dev/null
+zip -v 1>/dev/null
 if [ $? -eq 127 ]; then
   echo "Zip is not installed"
-  exit 1;
+  exit 1
 fi
 
-# check whether curl is installed or not
-curl --version 1> /dev/null
-if [ $? -eq 127 ]; then
-  echo "curl is not installed"
-  exit 1;
-fi
+echo -e "\n------ Running Diagnostic Script ------\n"
 
 for i in ${output_generators[@]}; do
-  output=`$i`
+  output=$($i)
   outputs+="${output} "
 done
 
 # create zip file
 echo "----- Creating zip file -----"
-OUT="`date | tr " " "_"`.zip"
+OUT="$(date | tr " " "_").zip"
 
 zip -r "$OUT" ${outputs[@]}
 echo $OUT

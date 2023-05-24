@@ -70,6 +70,8 @@ DEFAULT_INPUTS = {
         "help": "",
         "user_input": "Do you want to enable TLSv1.2 along with TLSv1.3 for CE UI",
     },
+    "REQUESTS_TIMEOUT": {"default": 300, "skip": True, "help": ""},
+    "POPEN_TIMEOUT": {"default": 1800, "skip": True, "help": ""},
 }
 
 AVAILABLE_INPUTS = {}
@@ -84,23 +86,28 @@ MIN_PODMAN_VERSION = "3.4.2"
 MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 
 N = 4
-CE_VERSION_1 = f"CE v{N}-latest"
-CE_VERSION_2 = f"CE v{N-1}-latest"
+CURRENT_VERSION = "4.2.0"
+PREVIOUS_VERSION = "3.4.1"
+CE_VERSION_1 = f"CE v{N}-{CURRENT_VERSION}"
+CE_VERSION_2 = f"CE v{N-1}-{PREVIOUS_VERSION}"
 CE_VERSION_3 = "CE beta-latest"
-CORE_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
-UI_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
-CORE_VERSION_2_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-latest"
-UI_VERSION_2_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-latest"
+CORE_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-{CURRENT_VERSION}"
+UI_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-{CURRENT_VERSION}"
+CORE_VERSION_2_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-{PREVIOUS_VERSION}"
+UI_VERSION_2_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-{PREVIOUS_VERSION}"
 CORE_VERSION_BETA_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-beta"
 UI_VERSION_BETA_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-beta"
 
-CORE_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-latest"
-UI_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-latest"
-CORE_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:core3-beta"
-UI_BETA_DEFAULT = "netskopetechnicalalliances/cloudexchange:ui3-beta"
+CORE_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
+UI_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
+CORE_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-latest"
+UI_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-latest"
 
 GIT_PLUGIN_REPO = "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
 
+MONGO_USER_ID = 999
+
+EXTRA_SMALL_RAM_THRESOLD = 6  # in GB
 
 class Status(Enum):
     PASS = ("PASS",)
@@ -248,7 +255,8 @@ def create_self_signed_ssl_certs():
             command = "sudo chmod 666 data/ssl_certs/cte_cert.crt"
             set_directory_permission("data/ssl_certs/cte_cert.crt", command)
             command_key = "sudo chmod 666 data/ssl_certs/cte_cert_key.key"
-            set_directory_permission("data/ssl_certs/cte_cert_key.key", command_key)
+            set_directory_permission(
+                "data/ssl_certs/cte_cert_key.key", command_key)
         else:
             raise Exception(f"{err.decode('utf-8')}\n")
     except Exception as e:
@@ -323,7 +331,8 @@ def check_machine_specs():
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         result = sock.connect_ex(("127.0.0.1", 15672))
         if result == 0:
-            print_fail(f"Port 15672 is already in use. (Please stop the Netskope CE instance if already running (using `./stop`) and re-run the setup script.)")
+            print_fail(
+                f"Port 15672 is already in use. (Please stop the Netskope CE instance if already running (using `./stop`) and re-run the setup script.)")
             CHECKS["Port Check"] = Status.FAIL
         else:
             print_pass(f"Port 15672 is available.")
@@ -498,6 +507,7 @@ def parse_proxy(url):
         return f"{url.scheme}://{url.hostname}"
     return f"{url.scheme}://{url.hostname}:{url.port}"
 
+
 def ask_for_ce_version():
     while True:
         current_version = ""
@@ -509,9 +519,11 @@ def ask_for_ce_version():
             current_version = CE_VERSION_2
 
         if current_version == "":
-            print(f"\nAvailable Netskope CE Versions\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n")
+            print(
+                f"\nAvailable Netskope CE Versions\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n")
         else:
-            print(f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n")
+            print(
+                f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n")
         n = input(
             "Select the version you want to install (1/2/3): "
         )
@@ -529,14 +541,20 @@ def ask_for_ce_version():
         AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_1_TAG
         AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_1_TAG
         AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
+        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_1_LATEST_TAG
+        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_1_LATEST_TAG
     elif n == 2:
         AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_2_TAG
         AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_2_TAG
         AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
+        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_2_LATEST_TAG
+        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_2_LATEST_TAG
     elif n == 3:
         AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_BETA_TAG
         AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_BETA_TAG
         AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
+        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_BETA_TAG
+        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_BETA_TAG
 
 
 def ask_for_initial_inputs():
@@ -643,6 +661,42 @@ def handle_http_errors(res):
         raise ServerExceptions("Gateway Timeout Error.")
 
 
+def connectivity_check_for_analytics():
+    try:
+        connectivity = True
+        print()
+        url = "https://reporting.netskope.tech/"
+        req = urllib.request.Request(url)
+        proxy = None
+        if AVAILABLE_INPUTS.get("HTTPS_PROXY", "") != "":
+            proxy = AVAILABLE_INPUTS.get("HTTPS_PROXY")
+        proxies = {}
+        if proxy is not None:
+            proxies["https"] = proxy
+        proxy_support = urllib.request.ProxyHandler(proxies=proxies)
+        opener = urllib.request.build_opener(proxy_support)
+        urllib.request.install_opener(opener)
+        urllib.request.urlopen(req, timeout=60)
+    except urllib.error.HTTPError as e:
+        if e.code not in [400, 401, 403]:
+            connectivity = False
+            print_warning(
+                f"Error occurred while verifying connectivity to {url}: {e}"
+            )
+    except Exception as e:
+        connectivity = False
+        print_warning(
+            f"Error occurred while verifying connectivity to {url}: {e}"
+        )
+    if not connectivity:
+        print_warning(
+            "Unable to establish a connection with https://reporting.netskope.tech/. "
+            "Verify the network connectivity, proxy settings or firewall configurations "
+            "to address the connectivity issues for enhanced product deployment and administration experience."
+        )
+    AVAILABLE_INPUTS["ANALYTICS_SERVER_CONNECTIVITY"] = connectivity
+
+
 def handle_connectivity(name, url):
     try:
         req = urllib.request.Request(url)
@@ -708,7 +762,8 @@ def check_github_connctivity():
     out, err = p.communicate()
     if p.returncode != 0:
         CHECKS["Github"] = Status.FAIL
-        print_fail(f"Error occurred while verifying connectivity to https://github.com: {err}")
+        print_fail(
+            f"Error occurred while verifying connectivity to https://github.com: {err}")
     else:
         CHECKS["Github"] = Status.PASS
         print_pass("Connectivity to https://github.com verified successfully")
@@ -742,7 +797,7 @@ def timeout(t, cmd, *args):
 
 
 def check_connectivity():
-    # Check connectivity for github, docker and tenant
+    # Check connectivity for github, docker, tenant and analytics url
     print(
         "\nVerifying the connectivity for pre-requisite outbound network calls..."
     )
@@ -755,7 +810,8 @@ def check_connectivity():
 
     tenant_name = AVAILABLE_INPUTS.get("NETSKOPE_TENANT")
     if tenant_name != "test":
-        timeout(60, handle_connectivity, "Netskope tenant", f"https://{tenant_name}.goskope.com")
+        timeout(60, handle_connectivity, "Netskope tenant",
+                f"https://{tenant_name}.goskope.com")
 
     if Status.FAIL in [
         CHECKS.get("Github"),
@@ -767,6 +823,7 @@ def check_connectivity():
         )
     else:
         put_proxy_in_env()
+        connectivity_check_for_analytics()
 
 
 def isRedHat():
@@ -838,18 +895,18 @@ def check_and_apply_file_permissions():
         else:
             if platform.system().lower() not in ["darwin"]:
                 if (
-                    stat("data/mongo-data").st_uid == 1001
-                    and stat("data/mongo-data").st_gid == 1001
+                    stat("data/mongo-data").st_uid == MONGO_USER_ID
+                    and stat("data/mongo-data").st_gid == MONGO_USER_ID
                 ):
                     print_pass(
-                        f"Verified owner of data/mongo-data is user with uid 1001"
+                        f"Verified owner of data/mongo-data is user with uid {MONGO_USER_ID}"
                     )
                     CHECKS["MONGO"] = Status.PASS
                 else:
-                    command = "sudo chown -R 1001:1001 data/mongo-data"
+                    command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
                     set_directory_permission("data/mongo-data", command)
                     print_pass(
-                        f"Owner of data/mongo-data is not accurate... Changing owner of data/mongo-data to user with uid 1001"
+                        f"Owner of data/mongo-data is not accurate... Changing owner of data/mongo-data to user with uid {MONGO_USER_ID}"
                     )
                     CHECKS["MONGO"] = Status.PASS
 
@@ -869,7 +926,7 @@ def check_and_apply_file_permissions():
                     command = "sudo chmod -R 744 data/mongo-data"
                     set_directory_permission("data/mongo-data", command)
                     print_pass(
-                        f"File permissions of data/mongo-data are not accurate... Adding read/write permissions to data/custom_plugins"
+                        f"File permissions of data/mongo-data are not accurate... Adding read/write permissions to data/mongo-data"
                     )
                     CHECKS["MONGO-FILE"] = Status.PASS
             except Exception as e:
@@ -882,7 +939,61 @@ def check_and_apply_file_permissions():
         print_fail(f"Error occurred while verifying owner of data/mongo-data")
         CHECKS["MONGO"] = Status.FAIL
 
-    
+    # mongo-init.sh file owner and permissions check
+    try:
+        if not os.path.exists("data/database-init/mongo-init.sh"):
+            print_fail(
+                f"Could not locate data/database-init/mongo-init.sh file "
+                "(Please run `git reset --hard HEAD && git pull` and re-run the script.)"
+            )
+            CHECKS["MONGO-INIT"] = Status.FAIL
+        else:
+            if platform.system().lower() not in ["darwin"]:
+                if (
+                    stat("data/database-init/mongo-init.sh").st_uid == MONGO_USER_ID
+                    and stat("data/database-init/mongo-init.sh").st_gid == MONGO_USER_ID
+                ):
+                    print_pass(
+                        f"Verified owner of data/database-init/mongo-init.sh is user with uid {MONGO_USER_ID}"
+                    )
+                    CHECKS["MONGO-INIT"] = Status.PASS
+                else:
+                    command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/database-init"
+                    set_directory_permission("data/database-init", command)
+                    print_pass(
+                        "Owner of data/database-init/mongo-init.sh is not accurate... "
+                        f"Changing owner of data/database-init/mongo-init.sh to user with uid {MONGO_USER_ID}"
+                    )
+                    CHECKS["MONGO-INIT"] = Status.PASS
+
+            # mongo-init.sh permissions check
+            try:
+                file_perms = oct(stat("data/database-init/mongo-init.sh").st_mode & 0o777)
+                if (
+                    (int(file_perms[2]) & 4)
+                    and (int(file_perms[2]) & 2)
+                    and (int(file_perms[3]) & 4)
+                    and (int(file_perms[3]) & 2)
+                    and (int(file_perms[4]) & 4)
+                ):
+                    print_pass(f"Verified file permissions of data/database-init/mongo-init.sh")
+                    CHECKS["MONGO-INIT-FILE"] = Status.PASS
+                else:
+                    command = "sudo chmod -R 664 data/database-init"
+                    set_directory_permission("data/database-init", command)
+                    print_pass(
+                        "File permissions of data/database-init/mongo-init.sh are not accurate... "
+                        "Adding read/write permissions to data/database-init/mongo-init.sh"
+                    )
+                    CHECKS["MONGO-INIT-FILE"] = Status.PASS
+            except Exception as e:
+                print_fail(
+                    "Error occurred while verifying file permissions for data/database-init/mongo-init.sh"
+                )
+                CHECKS["MONGO-INIT-FILE"] = Status.FAIL
+    except Exception as e:
+        print_fail("Error occurred while verifying owner of data/database-init/mongo-init.sh")
+        CHECKS["MONGO-INIT"] = Status.FAIL
 
     # Custom_plugins directory
     try:
@@ -897,26 +1008,47 @@ def check_and_apply_file_permissions():
             )
             CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
         else:
-            file_perms = oct(stat("data/custom_plugins").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[3]) & 2)
-                and (int(file_perms[3]) & 1)
-                and (int(file_perms[4]) & 4)
-                and (int(file_perms[4]) & 1)
-            ):
-                print_pass(f"Verified file permissions of data/custom_plugins")
+            if platform.system().lower() not in ["darwin"]:
+                if (
+                    stat("data/custom_plugins").st_uid == 1001
+                    and stat("data/custom_plugins").st_gid == 1001
+                ):
+                    print_pass(
+                        f"Verified owner of data/custom_plugins is user with uid 1001"
+                    )
+                else:
+                    command = "sudo chown -R 1001:1001 data/custom_plugins"
+                    set_directory_permission("data/custom_plugins", command)
+                    print_pass(
+                        f"Owner of data/custom_plugins is not accurate... Changing owner of data/custom_plugins to user with uid 1001"
+                    )
                 CHECKS["CUSTOM_PLUGINS"] = Status.PASS
-            else:
-                command = "sudo chmod -R 775 data/custom_plugins"
-                set_directory_permission("data/custom_plugins", command)
-                print_pass(
-                    f"File permissions of data/custom_plugins are not accurate... Adding read/write/execute permissions to data/custom_plugins"
+
+            try:
+                file_perms = oct(stat("data/custom_plugins").st_mode & 0o777)
+                if (
+                    (int(file_perms[2]) & 4)
+                    and (int(file_perms[2]) & 2)
+                    and (int(file_perms[2]) & 1)
+                    and (int(file_perms[3]) & 4)
+                    and (int(file_perms[4]) & 4)
+                ):
+                    print_pass(
+                        f"Verified file permissions of data/custom_plugins")
+                    CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
+                else:
+                    command = "sudo chmod -R 744 data/custom_plugins"
+                    set_directory_permission("data/custom_plugins", command)
+                    print_pass(
+                        f"File permissions of data/custom_plugins are not accurate... Adding read/write permissions to data/custom_plugins"
+                    )
+                    CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
+            except Exception as e:
+                print_fail(
+                    f"Error occurred while verifying file permissions for data/custom_plugins"
                 )
-                CHECKS["CUSTOM_PLUGINS"] = Status.PASS
+                CHECKS["CUSTOM_PLUGINS_FILE"] = Status.FAIL
+
     except Exception as e:
         # print(e)
         print_fail(
@@ -968,9 +1100,10 @@ def check_and_apply_file_permissions():
                     f"File permissions of data/ssl_certs are not accurate... Adding read/write permissions to data/ssl_certs"
                 )
                 CHECKS["SSL_CERTS"] = Status.PASS
-        
+
         if os.path.exists("data/ssl_certs/cte_cert.crt"):
-            file_perms = oct(stat("data/ssl_certs/cte_cert.crt").st_mode & 0o777)
+            file_perms = oct(
+                stat("data/ssl_certs/cte_cert.crt").st_mode & 0o777)
             if not (
                 (int(file_perms[2]) & 4)
                 and (int(file_perms[2]) & 2)
@@ -978,15 +1111,17 @@ def check_and_apply_file_permissions():
                 and (int(file_perms[3]) & 2)
                 and (int(file_perms[4]) & 4)
                 and (int(file_perms[4]) & 2)
-            ): 
+            ):
                 command = "sudo chmod 666 data/ssl_certs/cte_cert.crt"
-                set_directory_permission("data/ssl_certs/cte_cert.crt", command)
+                set_directory_permission(
+                    "data/ssl_certs/cte_cert.crt", command)
                 print_pass(
                     f"File permissions of data/ssl_certs/cte_cert.crt are not accurate... Adding read/write permissions to data/ssl_certs/cte_cert.crt"
                 )
 
         if os.path.exists("data/ssl_certs/cte_cert_key.key"):
-            file_perms = oct(stat("data/ssl_certs/cte_cert_key.key").st_mode & 0o777)
+            file_perms = oct(
+                stat("data/ssl_certs/cte_cert_key.key").st_mode & 0o777)
             if not (
                 (int(file_perms[2]) & 4)
                 and (int(file_perms[2]) & 2)
@@ -994,13 +1129,14 @@ def check_and_apply_file_permissions():
                 and (int(file_perms[3]) & 2)
                 and (int(file_perms[4]) & 4)
                 and (int(file_perms[4]) & 2)
-            ): 
+            ):
                 command = "sudo chmod 666 data/ssl_certs/cte_cert_key.key"
-                set_directory_permission("data/ssl_certs/cte_cert_key.key", command)
+                set_directory_permission(
+                    "data/ssl_certs/cte_cert_key.key", command)
                 print_pass(
                     f"File permissions of data/ssl_certs/cte_cert_key.key are not accurate... Adding read/write permissions to data/ssl_certs/cte_cert_key.key"
                 )
-            
+
     except Exception as e:
         print_fail(
             f"Error occurred while verifying file permissions for data/ssl_certs"
@@ -1009,30 +1145,49 @@ def check_and_apply_file_permissions():
 
     # rabbitmq directory
     try:
-        if not os.path.exists("data/rabbitmq"):
+        if not os.path.exists("data/rabbitmq/data"):
             print_fail(
-                f"Could not locate data/rabbitmq directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
+                "Could not locate data/rabbitmq/data directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
             )
             CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
         else:
+            if platform.system().lower() not in ["darwin"]:
+                if (
+                    stat("data/rabbitmq").st_uid == 1001
+                    and stat("data/rabbitmq").st_gid == 1001
+                ):
+                    print_pass(
+                        "Verified owner of data/rabbitmq is user with uid 1001"
+                    )
+                    CHECKS["RABBITMQ"] = Status.PASS
+                else:
+                    command = "sudo chown -R 1001:1001 data/rabbitmq"
+                    set_directory_permission("data/rabbitmq", command)
+                    print_pass(
+                        "Owner of data/rabbitmq is not accurate... Changing owner of data/rabbitmq to user with uid 1001"
+                    )
+                    CHECKS["RABBITMQ"] = Status.PASS
+
             file_perms = oct(stat("data/rabbitmq").st_mode & 0o777)
             if (
                 (int(file_perms[2]) & 4)
+                and (int(file_perms[2]) & 2)
+                and (int(file_perms[2]) & 1)
                 and (int(file_perms[3]) & 4)
                 and (int(file_perms[4]) & 4)
             ):
-                print_pass(f"Verified file permissions of data/rabbitmq")
+                print_pass("Verified file permissions of data/rabbitmq")
                 CHECKS["RABBITMQ"] = Status.PASS
             else:
-                command = "sudo chmod -R 444 data/rabbitmq"
+                command = "sudo chmod -R 744 data/rabbitmq"
                 set_directory_permission("data/rabbitmq", command)
                 print_pass(
-                    f"File permissions of data/rabbitmq are not accurate... Adding read permissions to data/rabbitmq"
+                    "File permissions of data/rabbitmq are not accurate... Adding read permissions to data/rabbitmq"
                 )
                 CHECKS["RABBITMQ"] = Status.PASS
-    except Exception as e:
+    except Exception:
         print_fail(
-            f"Error occurred while verifying file permissions for data/rabbitmq"
+            "Error occurred while verifying file permissions/owner information for data/rabbitmq directory"
         )
         CHECKS["RABBITMQ"] = Status.FAIL
 
@@ -1164,7 +1319,7 @@ def check_port(port):
 def pull_from_github():
     myenv = os.environ.copy()
     myenv["LC_ALL"] = "C"
-    print("\nPulling updates from github.com...")
+    print("\nChecking for local changes..")
     pr1 = subprocess.Popen(
         ['git', 'diff', '-G.'],
         cwd=os.getcwd(),
@@ -1179,29 +1334,9 @@ def pull_from_github():
 
     print(out)
 
-    if out == "" and error == "":
-        pr1 = subprocess.Popen(
-            ['git pull'],
-            cwd=os.getcwd(),
-            shell=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=myenv
-        )
-        (out, error) = pr1.communicate()
-        error = error.decode("utf-8")
-        out = out.decode("utf-8")
-        print(out)
-        if error != "" and ("Already up-to-date" not in out and "Already up to date" not in out):
-            print_fail(f"Error while pulling the latest updates from github.\n{error}")
-            print("\nRunning existing setup to install the Netskope CE...")
-            return
-        if "Already up-to-date" not in out and "Already up to date" not in out:
-            print("\nThe latest changes has been pulled... Please run the setup script again...")
-            exit(0)
-    elif error != "":
+    if error != "":
         print(f"\nError while checking for git diff. {error}\n")
-    else:   
+    if out != "":
         print("\n\033[1;31mThere are some local changes that might affect the installation. Can not proceed further. Please Remove the local changes and re-run the script.\033[0;37m\n")
         exit(1)
 
@@ -1209,7 +1344,7 @@ def pull_from_github():
 def migrate_mongo():
     print("\nVerifying mongo-data directory...")
     if os.path.exists("data/mongo-data/"):
-        files = os.listdir("data/mongo-data/") 
+        files = os.listdir("data/mongo-data/")
         files = [x for x in files if not x.startswith('.')]
 
         if len(files) == 0 or "data" in files:
@@ -1224,12 +1359,13 @@ def migrate_mongo():
             for _file in files:
                 path_name = f"data/mongo-data/{_file}"
                 if os.path.isdir(path_name):
-                    shutil.copytree(path_name, f"data/mongo-data/data/db/{_file}")
+                    shutil.copytree(
+                        path_name, f"data/mongo-data/data/db/{_file}")
                 else:
                     shutil.copy(path_name, "data/mongo-data/data/db/")
             print("mongo-data directory structure updated successfully")
 
-            # Change owner to 1001 after copying the data 
+            # Change owner to 1001 after copying the data
             if platform.system().lower() not in ["darwin"]:
                 command = "sudo chown -R 1001:1001 data/mongo-data"
                 set_directory_permission("data/mongo-data", command)
@@ -1240,13 +1376,16 @@ def migrate_mongo():
             f"Could not locate data/mongo-data directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
         )
         exit(1)
-        
+
+
 def copy_env():
     while True:
         if AVAILABLE_INPUTS["DESTINATION_PATH"] == "":
-            destination = input("> Enter the destination path (e.g. './backup_env'): ").strip()
+            destination = input(
+                "> Enter the destination path (e.g. './backup_env'): ").strip()
         else:
-            destination = input(f"\n> Enter the destination path for backup of .env (Current: \"{AVAILABLE_INPUTS['DESTINATION_PATH']}\"): ").strip()
+            destination = input(
+                f"\n> Enter the destination path for backup of .env (Current: \"{AVAILABLE_INPUTS['DESTINATION_PATH']}\"): ").strip()
         destination = AVAILABLE_INPUTS["DESTINATION_PATH"] if destination == "" else destination
         AVAILABLE_INPUTS["DESTINATION_PATH"] = destination
         put_env_variable(AVAILABLE_INPUTS)
@@ -1273,7 +1412,8 @@ def copy_env():
                 f"Error occurred while taking backup. Error: {e}"
             )
             continue
-        
+
+
 def take_env_backup():
     if AVAILABLE_INPUTS["DESTINATION_PATH"] == "":
         isBackup = (
@@ -1287,6 +1427,38 @@ def take_env_backup():
             copy_env()
     else:
         copy_env()
+
+
+def get_total_physical_memory():
+    try:
+        if sys.platform.startswith('linux'):
+            with open('/proc/meminfo', 'r') as mem_info:
+                for line in mem_info:
+                    if line.startswith('MemTotal'):
+                        total_memory = int(line.split()[1]) * 1024
+                        return total_memory
+        elif sys.platform.startswith('darwin'):
+            memory_info = os.popen('sysctl hw.memsize').read().strip()
+            total_memory = int(memory_info.split(':')[1].strip())
+            return total_memory
+        return None
+    except Exception:
+        pass
+
+def check_for_extra_small_stack_confs():
+    try:
+        AVAILABLE_INPUTS["RABBITMQ_CUSTOM_CONF_PATH"] = "./data/rabbitmq/custom.conf"
+        AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = "3G"
+        mem_bytes = get_total_physical_memory()
+        if not mem_bytes:
+            return
+        mem_gib = mem_bytes/(1024**3)
+        if mem_gib <= EXTRA_SMALL_RAM_THRESOLD:
+            AVAILABLE_INPUTS["RABBITMQ_CUSTOM_CONF_PATH"] = "./data/rabbitmq/extra_small_custom.conf"
+            AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = "2G"
+    except Exception:
+        pass
+
 
 def run():
     try:
@@ -1320,7 +1492,8 @@ def run():
         check_and_apply_file_permissions()
 
         if (Status.FAIL in CHECKS.values()) or (Status.NOT_VERIFIED in [
-            CHECKS.get('Podman-Plugin', None), CHECKS.get('Podman', None), CHECKS.get('Podman-Compose', None)
+            CHECKS.get('Podman-Plugin', None), CHECKS.get('Podman',
+                                                          None), CHECKS.get('Podman-Compose', None)
         ]):
             print(
                 "\n\n\033[1;31mInstallation failed. One or more prerequisite checks are not met. Please address the minimum requirements and re-run the setup script.\033[0;37m\n"
@@ -1340,7 +1513,6 @@ def run():
                 .strip()
                 .lower()
             )
-
 
         # Ask for Protocol
         protocol = ""
@@ -1425,9 +1597,10 @@ def run():
                                     or ("/" in data)
                                     or ("'" in data)
                                     or ('"' in data)
+                                    or (" " in data)
                                 ):
                                     print(
-                                        "Maintenance password can not contain \\ / ' \" Please try again.\n"
+                                        "Maintenance password can not contain \\ / space ' \" Please try again.\n"
                                     )
                                     continue
 
@@ -1446,9 +1619,10 @@ def run():
                         if user_input:
                             if key == "UI_PORT":
                                 i = 0
-                                while True: 
+                                while True:
                                     if i >= 3:
-                                        print("\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
+                                        print(
+                                            "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
                                         exit(1)
                                     data = input(
                                         f"> {user_input} (Default: \"{item['default']}\"): "
@@ -1461,7 +1635,8 @@ def run():
                                             )
                                             break
                                     else:
-                                        print("Invalid port provided... Port should be within 1 to 65535 range...\n")
+                                        print(
+                                            "Invalid port provided... Port should be within 1 to 65535 range...\n")
                                     i += 1
                             else:
                                 data = input(
@@ -1471,7 +1646,6 @@ def run():
                             data = input(
                                 f"> Enter {key} (Default: \"{item['default']}\"): "
                             ).strip()
-                            
 
                 else:
                     if key != "MAINTENANCE_PASSWORD":
@@ -1489,9 +1663,10 @@ def run():
                                         )
                             elif key == "UI_PORT":
                                 i = 0
-                                while True: 
+                                while True:
                                     if i >= 3:
-                                        print("\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
+                                        print(
+                                            "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
                                         exit(1)
                                     data = input(
                                         f"> {user_input} (Current: \"{AVAILABLE_INPUTS[key]}\"): "
@@ -1504,7 +1679,8 @@ def run():
                                             )
                                             break
                                     else:
-                                        print("Invalid port provided... Port should be within 1 to 65535 range...\n")
+                                        print(
+                                            "Invalid port provided... Port should be within 1 to 65535 range...\n")
                                     i += 1
                             else:
                                 data = input(
@@ -1527,14 +1703,6 @@ def run():
                     AVAILABLE_INPUTS["MAINTENANCE_PASSWORD"].strip("'")
                 )
 
-            # if key == "BETA_OPT_IN":
-            #     if data.lower() in ["y", "yes"]:
-            #         AVAILABLE_INPUTS["CORE_TAG"] = CORE_BETA_DEFAULT
-            #         AVAILABLE_INPUTS["UI_TAG"] = UI_BETA_DEFAULT
-            #     else:
-            #         AVAILABLE_INPUTS["CORE_TAG"] = CORE_DEFAULT
-            #         AVAILABLE_INPUTS["UI_TAG"] = UI_DEFAULT
-
             if key == "ENABLE_TLS_V_1_2":
                 if data.lower() in ["y", "yes"]:
                     data = "TLSv1.2 TLSv1.3"
@@ -1546,21 +1714,23 @@ def run():
                 AVAILABLE_INPUTS[key] = item.get("default", 4)
 
         code_tag_version = AVAILABLE_INPUTS.get("CORE_TAG", "").strip()
-        if not "3-latest" in code_tag_version:
-          # len == 1 as .gitkeep file will always be there in the ca_certs folder
-          if (len(os.listdir('data/ca_certs')) == 1):
-            # Ask for custom ca certs
-            custom_ssl_confirm = (
-                input(
-                    "\n> Do you want to provide custom CA certs? (y/n): "
+        if "3-latest" not in code_tag_version:
+            # len == 1 as .gitkeep file will always be there in the ca_certs folder
+            if (len(os.listdir('data/ca_certs')) == 1):
+                # Ask for custom ca certs
+                custom_ssl_confirm = (
+                    input(
+                        "\n> Do you want to provide custom CA certs? (y/n): "
+                    )
+                    .strip()
+                    .lower()
                 )
-                .strip()
-                .lower()
-            )
-            if custom_ssl_confirm in ["y", "yes"]:
-                print("\n\033[1;37mPlease add your certs to ./data/ca_certs and Re-run the script.\033[0;37m")
-          else:
-            print("CA certificate successfully found in the /data/ca_certs folder.")
+                if custom_ssl_confirm in ["y", "yes"]:
+                    print(
+                        "\n\033[1;37mPlease add your certs to ./data/ca_certs and Re-run the script.\033[0;37m")
+            else:
+                print("CA certificate successfully found in the /data/ca_certs folder.")
+        check_for_extra_small_stack_confs()
         put_env_variable(AVAILABLE_INPUTS)
         take_env_backup()
 
@@ -1576,7 +1746,7 @@ def run():
             "\nPlease re-run the setup script to update any parameter.\n"
         )
 
-    except KeyboardInterrupt as e:
+    except KeyboardInterrupt:
         put_env_variable(AVAILABLE_INPUTS)
         print(
             "\nSetup stopped... The entered configurations will be saved...\n"

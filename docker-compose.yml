@@ -1,17 +1,17 @@
 version: "3.3"
 services:
   rabbitmq-stats:
-    image: index.docker.io/bitnami/rabbitmq:3.9
+    image: index.docker.io/rabbitmq:3.11.11-management
+    user: "1001:1001"
     environment:
-      - RABBITMQ_NODE_TYPE=stats
-      - RABBITMQ_NODE_NAME=rabbit@rabbitmq-stats
-      - RABBITMQ_ERL_COOKIE=${MAINTENANCE_PASSWORD}
-      - RABBITMQ_PASSWORD=${MAINTENANCE_PASSWORD}
-      - RABBITMQ_SECURE_PASSWORD=yes
-      - RABBITMQ_DISK_FREE_ABSOLUTE_LIMIT=1
+      - RABBITMQ_NODENAME=rabbit@rabbitmq-stats
+      - RABBITMQ_DEFAULT_USER=user
+      - RABBITMQ_DEFAULT_PASS=${MAINTENANCE_PASSWORD}
+      - RABBITMQ_DISK_FREE_LIMIT_ABSOLUTE=1
     restart: always
     volumes:
-      - ./data/rabbitmq/custom.conf:/bitnami/rabbitmq/conf/custom.conf:z
+      - ${RABBITMQ_CUSTOM_CONF_PATH:-./data/rabbitmq/custom.conf}:/etc/rabbitmq/conf.d/custom.conf:z
+      - ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z
     logging:
       options:
         max-size: "10m"
@@ -19,17 +19,26 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: ${RABBITMQ_RAM_RESOURCES:-3G}
+    entrypoint:
+      [
+        "/bin/bash",
+        "-c",
+        "echo ${MAINTENANCE_PASSWORD_ESCAPED} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"
+      ]
   mongodb-primary:
-    image: index.docker.io/bitnami/mongodb:4.4
+    image: index.docker.io/mongo:5.0
+    user: mongodb
     volumes:
-      - ./data/mongo-data:/bitnami/mongodb:z
+      - ./data/mongo-data/data/db:/data/db:z
+      - ./data/database-init/mongo-init.sh:/docker-entrypoint-initdb.d/mongo-init.sh:z
     environment:
       - MONGODB_ADVERTISED_HOSTNAME=mongodb-primary
-      - MONGODB_ROOT_PASSWORD=${MAINTENANCE_PASSWORD}
+      - MONGO_INITDB_ROOT_USERNAME=root
+      - MONGO_INITDB_ROOT_PASSWORD=${MAINTENANCE_PASSWORD}
+      - MONGO_INITDB_DATABASE=cte
       - MONGODB_USERNAME=cteadmin
       - MONGODB_PASSWORD=${MAINTENANCE_PASSWORD}
-      - MONGODB_DATABASE=cte
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
     restart: always
@@ -42,6 +51,7 @@ services:
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - ./data/ca_certs:/usr/local/share/ca-certificates:z
+      - ./data/rabbitmq/data:/var/lib/rabbitmq:z
     environment:
       - MONGO_CONNECTION_STRING=mongodb://cteadmin:${MAINTENANCE_PASSWORD_ESCAPED}@mongodb-primary:27017/cte
       - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD_ESCAPED}@rabbitmq-stats
@@ -52,15 +62,20 @@ services:
       - DOCKER_PASSWORD=${DOCKER_PASSWORD:-}
       - CORE_TAG=${CORE_TAG}
       - UI_TAG=${UI_TAG}
+      - CORE_LATEST_VERSION_TAG=${CORE_LATEST_VERSION_TAG}
+      - UI_LATEST_VERSION_TAG=${UI_LATEST_VERSION_TAG}
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - ANALYTICS_BASE_URL=https://reporting.netskope.tech
       - ANALYTICS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOiJjMDAyIn0.w8SVrTcDjk8PkR4IcbWGwOyf6-OWfCUyOoCTgZvqHqc
+      - ANALYTICS_SERVER_CONNECTIVITY=${ANALYTICS_SERVER_CONNECTIVITY:-True}
       - MAX_MAINTENANCE_WINDOW_MINUTES=${MAX_MAINTENANCE_WINDOW_MINUTES}
       - PULL_THREADS=${PULL_THREADS}
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
       - HTTP_PROXY=${HTTP_PROXY}
       - HTTPS_PROXY=${HTTPS_PROXY}
       - BETA_OPT_IN=${BETA_OPT_IN}
+      - REQUESTS_TIMEOUT=${REQUESTS_TIMEOUT}
+      - POPEN_TIMEOUT=${POPEN_TIMEOUT}
       # - UI_SERVICE_NAME=
       # - THRESHOLD_FOR_IDLE_CHECK_IN_MINUTES=
     restart: always
