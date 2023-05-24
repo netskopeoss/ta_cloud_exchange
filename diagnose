@@ -371,10 +371,10 @@ out_tenant_names() {
     podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
   else
     echo "Name:" >&$OUT
-    docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
+    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
     echo "" >>$OUT
     echo "Tenant's Name:" >>$OUT
-    docker-compose exec -ti mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
+    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
   fi
   stop_spin "Tenant Names\t" $pid "success"
   echo $OUT
@@ -484,6 +484,8 @@ if [ $? -eq 127 ]; then
   echo "Zip is not installed"
   exit 1
 fi
+
+echo -e "\n------ Running Diagnostic Script ------\n"
 
 for i in ${output_generators[@]}; do
   output=$($i)

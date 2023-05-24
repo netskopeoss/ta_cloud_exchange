@@ -1,7 +1,7 @@
 version: "3.3"
 services:
   rabbitmq-stats:
-    image: index.docker.io/rabbitmq:3.9-management
+    image: index.docker.io/rabbitmq:3.11.11-management
     user: "1001:1001"
     environment:
       - RABBITMQ_NODENAME=rabbit@rabbitmq-stats
@@ -10,7 +10,8 @@ services:
       - RABBITMQ_DISK_FREE_LIMIT_ABSOLUTE=1
     restart: always
     volumes:
-      - ./data/rabbitmq/custom.conf:/etc/rabbitmq/conf.d/custom.conf:z
+      - ${RABBITMQ_CUSTOM_CONF_PATH:-./data/rabbitmq/custom.conf}:/etc/rabbitmq/conf.d/custom.conf:z
+      - ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z
     logging:
       options:
         max-size: "10m"
@@ -18,8 +19,13 @@ services:
     deploy:
       resources:
         limits:
-          memory: 2G
-    entrypoint: ["/bin/bash","-c","echo ${MAINTENANCE_PASSWORD} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"]
+          memory: ${RABBITMQ_RAM_RESOURCES:-3G}
+    entrypoint:
+      [
+        "/bin/bash",
+        "-c",
+        "echo ${MAINTENANCE_PASSWORD_ESCAPED} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"
+      ]
   mongodb-primary:
     image: index.docker.io/mongo:5.0
     user: mongodb
@@ -45,6 +51,7 @@ services:
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - ./data/ca_certs:/usr/local/share/ca-certificates:z
+      - ./data/rabbitmq/data:/var/lib/rabbitmq:z
     environment:
       - MONGO_CONNECTION_STRING=mongodb://cteadmin:${MAINTENANCE_PASSWORD_ESCAPED}@mongodb-primary:27017/cte
       - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD_ESCAPED}@rabbitmq-stats
@@ -55,9 +62,12 @@ services:
       - DOCKER_PASSWORD=${DOCKER_PASSWORD:-}
       - CORE_TAG=${CORE_TAG}
       - UI_TAG=${UI_TAG}
+      - CORE_LATEST_VERSION_TAG=${CORE_LATEST_VERSION_TAG}
+      - UI_LATEST_VERSION_TAG=${UI_LATEST_VERSION_TAG}
       - WATCHTOWER_HTTP_API_TOKEN=${WATCHTOWER_TOKEN}
       - ANALYTICS_BASE_URL=https://reporting.netskope.tech
       - ANALYTICS_TOKEN=eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJpbnN0YWxsYXRpb25faWQiOiJjMDAyIn0.w8SVrTcDjk8PkR4IcbWGwOyf6-OWfCUyOoCTgZvqHqc
+      - ANALYTICS_SERVER_CONNECTIVITY=${ANALYTICS_SERVER_CONNECTIVITY:-True}
       - MAX_MAINTENANCE_WINDOW_MINUTES=${MAX_MAINTENANCE_WINDOW_MINUTES}
       - PULL_THREADS=${PULL_THREADS}
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
