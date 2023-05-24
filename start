@@ -7,7 +7,6 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
             echo "Could not find docker-compose"
             exit 1;
         else
-            docker-compose pull && \
             docker-compose --compatibility up --remove-orphans -d
         fi
     else
@@ -16,7 +15,6 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
             echo "Could not find podman-compose"
             exit 1;
         else
-            podman-compose -f podman-compose.yml pull && \
             podman-compose -f podman-compose.yml up -d
         fi
     fi
@@ -28,11 +26,9 @@ else
             echo "Could not find docker-compose or podman-compose"
             exit 1;
         else
-            podman-compose -f podman-compose.yml pull && \
             podman-compose -f podman-compose.yml up -d
         fi
     else
-        docker-compose pull && \
         docker-compose --compatibility up --remove-orphans -d
     fi
 fi
