@@ -18,6 +18,15 @@ fi
 trap "rm -f $LOCK_FILE" EXIT
 touch $LOCK_FILE
 
+. ./.env
+if [ -n "${HA_IP_LIST}" ]; then
+  docker_compose="docker-compose -f docker-compose-ha.yml"
+  podman_compose="podman-compose -f podman-compose-ha.yml"
+else
+  docker_compose="docker-compose -f docker-compose.yml"
+  podman_compose="podman-compose -f podman-compose.yml"
+fi
+
 # --- Output functions --------------------------------------------
 
 RHEL=$(hostnamectl | grep "Operating System:" | sed 's/Operating System://')
@@ -98,9 +107,9 @@ out_docker_core_logs() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose -f podman-compose.yml logs core >&$OUT
+    $podman_compose logs core >&$OUT
   else
-    docker-compose logs --no-color core >&$OUT
+    $docker_compose logs --no-color core >&$OUT
   fi
   stop_spin "Core Logs\t\t" $pid "success"
   echo $OUT
@@ -116,9 +125,9 @@ out_docker_ui_logs() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose -f podman-compose.yml logs ui >&$OUT
+    $podman_compose logs ui >&$OUT
   else
-    docker-compose logs --no-color ui >&$OUT
+    $docker_compose logs --no-color ui >&$OUT
   fi
   stop_spin "UI Logs\t\t" $pid "success"
   echo $OUT
@@ -134,9 +143,9 @@ out_docker_mongo_logs() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose -f podman-compose.yml logs mongodb-primary >&$OUT
+    $podman_compose logs mongodb-primary >&$OUT
   else
-    docker-compose logs --no-color mongodb-primary >&$OUT
+    $docker_compose logs --no-color mongodb-primary >&$OUT
   fi
   stop_spin "MongoDB Logs\t" $pid "success"
   echo $OUT
@@ -152,9 +161,9 @@ out_docker_rabbitmq_logs() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose -f podman-compose.yml logs rabbitmq-stats >&$OUT
+    $podman_compose logs rabbitmq-stats >&$OUT
   else
-    docker-compose logs --no-color rabbitmq-stats >&$OUT
+    $docker_compose logs --no-color rabbitmq-stats >&$OUT
   fi
   stop_spin "RabbitMQ Logs\t" $pid "success"
   echo $OUT
@@ -190,6 +199,9 @@ out_stats() {
   echo -e "\n----------------------------------------------------------------------------------" >>$OUT
   echo "> df -h" >>$OUT
   df -h >>$OUT
+  echo -e "\n----------------------------------------------------------------------------------" >>$OUT
+  echo "> du -sh data/rabbitmq/data" >>$OUT
+  du -sh data/rabbitmq/data >>$OUT
   stop_spin "System Stats\t" $pid "success"
   echo $OUT
 }
@@ -200,8 +212,8 @@ out_docker_stats() {
     spin "Podman Stats\t" &
     pid=$!
     trap "trap_ctrlC $pid" 2
-    echo "> podman-compose version" >&$OUT
-    podman-compose version &>>$OUT
+    echo "> $podman_compose version" >&$OUT
+    $podman_compose version &>>$OUT
     echo "---------------------------------------------------------------------------------" >>$OUT
     echo "> podman ps --all" >>$OUT
     podman ps --all >>$OUT
@@ -224,8 +236,8 @@ out_docker_stats() {
     echo "> docker system info" >>$OUT
     docker system info >>$OUT
     echo "---------------------------------------------------------------------------------" >>$OUT
-    echo "> docker-compose version" >>$OUT
-    docker-compose version >>$OUT
+    echo "> $docker_compose version" >>$OUT
+    $docker_compose version >>$OUT
     echo "---------------------------------------------------------------------------------" >>$OUT
     echo "> docker system df" >>$OUT
     docker system df >>$OUT
@@ -244,7 +256,7 @@ out_platform_details() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    SETTINGS=$(podman-compose -f podman-compose.yml exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
+    SETTINGS=$($podman_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
     CE_VERSION=$(echo $SETTINGS | grep -Po '(?<="databaseVersion" : ")[^"]*')
     echo "------- CE Platform Details -------" >&$OUT
     echo "> CE-Version: $CE_VERSION" >>$OUT
@@ -253,27 +265,42 @@ out_platform_details() {
     echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
 
     echo -e "\n------- Proxy Details -------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
 
     echo -e "\n------- Plugin Repo Details -------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
 
     echo -e "\n------- CTE Plugin Details --------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
 
     echo -e "\n------- CTO Plugin Details --------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
 
     echo -e "\n------- URE Plugin Details --------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
 
     echo -e "\n------- ARE Plugin Details --------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
 
     echo -e "\n------- CLS Plugin Details --------" >>$OUT
-    podman-compose -f podman-compose.yml exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, lastRunAt:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+
+    echo -e "\n------- CTE Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cte_business_rules.find({}, {name: 1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    
+    echo -e "\n------- CTO Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_business_rules.find({}, {name: 1, alertFilters:1, dedupeRules:1, muteRules:1, queues:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- URE Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_business_rules.find({}, {name: 1, userFilters:1, muteRules:1, actions:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+  
+    echo -e "\n------- ARE Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_business_rules.find({}, {name: 1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+  
+    echo -e "\n------- CLS Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_business_rules.find({}, {name: 1, filters:1, siemMappings:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
   else
-    SETTINGS=$(docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
+    SETTINGS=$($docker_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
     CE_VERSION=$(echo $SETTINGS | grep -Po '(?<="databaseVersion" : ")[^"]*')
     echo "------- CE Platform Details -------" >&$OUT
     echo "> CE-Version: $CE_VERSION" >>$OUT
@@ -282,25 +309,40 @@ out_platform_details() {
     echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
 
     echo -e "\n------- Proxy Details -------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/\"t\"/d' >>$OUT
 
     echo -e "\n------- Plugin Repo Details -------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
 
     echo -e "\n------- CTE Plugin Details --------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
 
     echo -e "\n------- CTO Plugin Details --------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
 
     echo -e "\n------- URE Plugin Details --------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
 
     echo -e "\n------- ARE Plugin Details --------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
 
     echo -e "\n------- CLS Plugin Details --------" >>$OUT
-    docker-compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, lastRunAt:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+  
+    echo -e "\n------- CTE Business Rule Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cte_business_rules.find({}, {name: 1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    
+    echo -e "\n------- CTO Business Rule Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_business_rules.find({}, {name: 1, alertFilters:1, dedupeRules:1, muteRules:1, queues:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+
+    echo -e "\n------- URE Business Rule Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_business_rules.find({}, {name: 1, userFilters:1, muteRules:1, actions:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+  
+    echo -e "\n------- ARE Business Rule Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_business_rules.find({}, {name: 1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+  
+    echo -e "\n------- CLS Business Rule Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongo --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_business_rules.find({}, {name: 1, filters:1, siemMappings:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
   fi
   stop_spin "CE Details\t\t" $pid "success"
   echo $OUT
@@ -316,9 +358,9 @@ out_ce_logs() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >&$OUT
+    $podman_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >&$OUT
   else
-    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >&$OUT
+    $docker_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.logs.find({}, {createdAt:1,type:1,message:1,errorCode:1,details:1,_id:0}).toArray()" | grep -e "message" -e "type" -e "createdAt" -e "errorCode" -e "details" | sed -n 'h;n;p;n;G;p;n;p;n;p' | sed -n 'h;n;G;p;n;p;n;p;n;p' | sed -e 's/[ \t]*//' | sed 'N;N;N;N;s/\n/ /g' | sed -e "s/\r//g" >&$OUT
   fi
   stop_spin "CE Logs\t\t" $pid "success"
   echo $OUT
@@ -365,16 +407,16 @@ out_tenant_names() {
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
     echo "Name:" >&$OUT
-    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
+    $podman_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
     echo "" >>$OUT
     echo "Tenant's Name:" >>$OUT
-    podman-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
+    $podman_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
   else
     echo "Name:" >&$OUT
-    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
+    $docker_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="name" : ")[^"]*' >>$OUT
     echo "" >>$OUT
     echo "Tenant's Name:" >>$OUT
-    docker-compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
+    $docker_compose exec mongodb-primary mongo --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find()" | grep -Po '(?<="tenantName" : ")[^"]*' >>$OUT
   fi
   stop_spin "Tenant Names\t" $pid "success"
   echo $OUT
@@ -390,9 +432,9 @@ out_rabbitmq_stats() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose -f podman-compose.yml exec rabbitmq-stats rabbitmqctl list_queues name messages message_bytes message_bytes_persistent | sed -e '/podman/d' -e '/exit code/d' >&$OUT
+    $podman_compose exec rabbitmq-stats rabbitmqctl list_queues name messages message_bytes message_bytes_persistent | sed -e '/podman/d' -e '/exit code/d' >&$OUT
   else
-    docker-compose exec rabbitmq-stats rabbitmqctl list_queues name messages message_bytes message_bytes_persistent >&$OUT
+    $docker_compose exec rabbitmq-stats rabbitmqctl list_queues name messages message_bytes message_bytes_persistent >&$OUT
   fi
   stop_spin "RabbitMQ Stats\t" $pid "success"
   echo $OUT
@@ -408,9 +450,9 @@ out_worker_details() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    podman-compose -f podman-compose.yml exec core celery -A netskope.common.celery.main inspect active | sed -e '/podman/d' -e '/exit code/d' >&$OUT
+    $podman_compose exec core celery -A netskope.common.celery.main inspect active | sed -e '/podman/d' -e '/exit code/d' >&$OUT
   else
-    docker-compose exec core celery -A netskope.common.celery.main inspect active >&$OUT
+    $docker_compose exec core celery -A netskope.common.celery.main inspect active >&$OUT
   fi
   stop_spin "Worker Status\t" $pid "success"
   echo $OUT
