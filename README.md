@@ -7,14 +7,14 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Python 3
  - Zip (For the diagnose script)
  - Minimum Requirements Below:
- 	- 2 vCPU
+ 	- 4 vCPU (from CE v4.1.0 onwards, only x86 architecture with AVX is supported)
  	- 4 GB of Memory
-	- 20 GB of storage
+	- 40 GB of storage
  - Please see the full documentation for scale numbers.
  - Use latest docker version (https://docs.docker.com/engine/install/centos/)
  - Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
 
-## Install Procedure
+## Install Procedure for standalone deployment
  
  1. Clone repository to volume with requisite 20 GB of storage<br>
 	a. `mkdir netskope`<br>
@@ -44,14 +44,13 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
    4.0K drwxrwxr-x 6 ubuntu ubuntu 4.0K Sep  9 08:53
    4.0K drwxrwxr-x 3 ubuntu ubuntu 4.0K Nov  1 18:47 
    4.0K drwxrwxr-x 3 ubuntu ubuntu 4.0K Sep 29 12:31 custom_plugins
-   4.0K drwxrwxr-x 3 1001 1001 4.0K Sep 29 12:37 mongo-data
+   4.0K drwxrwxr-x 3 999 999 4.0K Sep 29 12:37 mongo-data
    4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep  9 08:53 rabbitmq
    4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep 10 14:49 ssl_certs
    ```
    Note the mask on line with custom_plugins - mask should be 775<br> 
-   Note ownership of mongo-data - should represent 1001:1001
+   Note ownership of mongo-data - should represent 999:999
+   Note ownership of rabbitmq - should represent 1001:1001
 
 3. If you get `SyntaxError: invalid syntax` while running `sudo ./setup`
    - Try to run `sudo python3 setup`
-
- 
