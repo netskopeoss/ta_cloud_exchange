@@ -1,16 +1,17 @@
 version: "3.3"
 services:
   rabbitmq-stats:
-    image: index.docker.io/rabbitmq:3.11.11-management
+    image: index.docker.io/rabbitmq:3.12.6-management
     user: "1001:1001"
     environment:
       - RABBITMQ_NODENAME=rabbit@rabbitmq-stats
       - RABBITMQ_DEFAULT_USER=user
       - RABBITMQ_DEFAULT_PASS=${MAINTENANCE_PASSWORD}
       - RABBITMQ_DISK_FREE_LIMIT_ABSOLUTE=1
+      - RABBITMQ_RAM_RESOURCES=${RABBITMQ_RAM_RESOURCES:-3072}
     restart: always
     volumes:
-      - ${RABBITMQ_CUSTOM_CONF_PATH:-./data/rabbitmq/custom.conf}:/etc/rabbitmq/conf.d/custom.conf:z
+      - ./data/rabbitmq/custom.conf:/etc/rabbitmq/conf.d/custom.conf:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z
     logging:
       options:
@@ -19,10 +20,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${RABBITMQ_RAM_RESOURCES:-3G}
+          memory: ${RABBITMQ_RAM_RESOURCES:-3072}M
     entrypoint: ["/bin/bash","-c","echo ${MAINTENANCE_PASSWORD_ESCAPED} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"]
   mongodb-primary:
-    image: index.docker.io/mongo:5.0
+    image: index.docker.io/mongo:5.0.21
     user: mongodb
     volumes:
       - ./data/mongo-data/data/db:/data/db:z
@@ -34,8 +35,8 @@ services:
       - MONGO_INITDB_DATABASE=cte
       - MONGODB_USERNAME=cteadmin
       - MONGODB_PASSWORD=${MAINTENANCE_PASSWORD}
-      - HTTP_PROXY=${HTTP_PROXY}
-      - HTTPS_PROXY=${HTTPS_PROXY}
+      - HTTP_PROXY=${CORE_HTTP_PROXY}
+      - HTTPS_PROXY=${CORE_HTTPS_PROXY}
     restart: always
     logging:
       options:
@@ -66,11 +67,13 @@ services:
       - MAX_MAINTENANCE_WINDOW_MINUTES=${MAX_MAINTENANCE_WINDOW_MINUTES}
       - PULL_THREADS=${PULL_THREADS}
       - MAX_WAIT_ON_LOCK_IN_MINUTES=${MAX_WAIT_ON_LOCK_IN_MINUTES}
-      - HTTP_PROXY=${HTTP_PROXY}
-      - HTTPS_PROXY=${HTTPS_PROXY}
+      - HTTP_PROXY=${CORE_HTTP_PROXY}
+      - HTTPS_PROXY=${CORE_HTTPS_PROXY}
       - BETA_OPT_IN=${BETA_OPT_IN}
       - REQUESTS_TIMEOUT=${REQUESTS_TIMEOUT}
       - POPEN_TIMEOUT=${POPEN_TIMEOUT}
+      # - PLUGIN_TIMEOUT_MINUTES=240
+      # - ENABLE_DEBUG=True
       # - UI_SERVICE_NAME=
       # - THRESHOLD_FOR_IDLE_CHECK_IN_MINUTES=
     restart: always

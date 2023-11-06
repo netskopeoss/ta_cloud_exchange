@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+
+import os
+import time
+import argparse
+from pymongo import MongoClient
+from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
+from dotenv import load_dotenv
+
+load_dotenv()
+
+MAINTENANCE_PASSWORD_ESCAPED = os.environ["MAINTENANCE_PASSWORD_ESCAPED"]
+HA_CURRENT_NODE = os.environ["HA_CURRENT_NODE"]
+
+
+def strtobool(val):
+    val = val.lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return 1
+    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return 0
+    else:
+        raise ValueError("invalid truth value %r" % (val,))
+
+def create_client(connection_string, direct_connection=False):
+    print("Creating mongo client...")
+    client = MongoClient(connection_string, directConnection=direct_connection)
+    return client
+
+def isRedHat():
+    try:
+        with open("/etc/redhat-release") as f:
+            content = f.readline()
+            if content.startswith("Red Hat"):
+                return True
+            else:
+                return False
+    except Exception as e:
+        return False
+
+def create_replica_set(connection_string):
+    try:
+        client = create_client(connection_string, True)
+        config = {
+            "_id": "mongo_replica_set",
+            "members": [
+                { "_id": 0, "host": f"{HA_CURRENT_NODE}:27017" },
+            ]
+        }
+
+        print("Initializing MongoDB replica set...")
+        _ = client.admin.command("replSetInitiate", config)
+        print("Replica set initialized.")
+
+        retry = 3
+        wait_time = 0
+        while True:
+            print("Waiting for migrations to be completed...")
+            time.sleep(5)
+            response = client.cte["settings"].find_one({})
+            if not response:
+                if not retry:
+                    print("Unable to find settings collection in the database. Exiting...")
+                    break
+                print("Unable to find settings collection in the database. Retrying...")
+                retry -= 1
+                time.sleep(wait_time)
+                wait_time += 5
+                continue
+            db_version = dict(response).get("databaseVersion", "")
+            if db_version == os.environ["INSTALL_VERSION"]:
+                print("Migrations completed.")
+                if isRedHat():
+                    print("Execute this command in remaining nodes to form a cluster:\n  > sudo ./start")
+                else:
+                    print("Execute this command in remaining nodes to form a cluster:\n  > ./start")
+                break
+    except OperationFailure as ex:
+        print("The MongoDB Replica set is already initialized.")
+        raise ex
+    finally:
+        client.close()
+
+def join_replica_set(connection_string):
+    print("Adding new node to the MongoDB replica set...")
+
+    try:
+        client = create_client(connection_string)
+        config  = client.admin.command('replSetGetConfig')
+        max_id = 1
+        for member in config['config']['members']:
+            if member['_id'] > max_id:
+                max_id = member['_id']
+
+        config['config']['members'].append({
+            '_id': max_id + 1,
+            'host': f'{HA_CURRENT_NODE}:27017'
+        })
+        config['config']['version'] += 1
+        _ = client.admin.command("replSetReconfig", config['config'])
+        print("The node is added to the MongoDB replica set.")
+    except OperationFailure as ex:
+        print("The node is already connected with the cluster.")
+        raise ex
+    finally:
+        client.close()
+
+def update_connection_info(old_ip, new_ip):
+    with open(".env", "r") as env_file:
+        content = env_file.read()
+    content = content.replace(
+        f"HA_PRIMARY_NODE_IP={old_ip}",
+        f"HA_PRIMARY_NODE_IP={new_ip}"
+    )
+    with open(".env", "w+") as env_file:
+        env_file.write(content)
+
+def remove_replica_set(connection_string):
+    print("Removing node from the MongoDB replica set...")
+
+    try:
+        client = create_client(connection_string)
+        cluster_status = client.admin.command({'replSetGetStatus': 1})
+        if len(cluster_status["members"]) == 1:
+            print("This is the only node in the cluster. Stopping the services...")
+            if HA_CURRENT_NODE != os.environ["HA_PRIMARY_NODE_IP"]:
+                update_connection_info(os.environ['HA_PRIMARY_NODE_IP'], HA_CURRENT_NODE)
+            exit(3)
+        for member in cluster_status["members"]:
+            if member["stateStr"] == "PRIMARY" and member["name"] == f'{HA_CURRENT_NODE}:27017':
+                print("This is the primary node. Stepping down...")
+                client.admin.command("replSetStepDown", 60)
+                print("Step down initiated successfully.")
+
+        if HA_CURRENT_NODE == os.environ["HA_PRIMARY_NODE_IP"]:
+            cluster_status = client.admin.command({'replSetGetStatus': 1})
+            new_primary_ip = ""
+            for member in cluster_status["members"]:
+                if member["stateStr"] == "PRIMARY":
+                    new_primary_ip = member["name"].split(":")[0]
+
+            # Update the local env file to change the primary node.
+            if new_primary_ip:
+                update_connection_info(os.environ['HA_PRIMARY_NODE_IP'], new_primary_ip)
+
+        config  = client.admin.command('replSetGetConfig')
+        members = []
+        for member in config['config']['members']:
+            if member['host'] != f'{HA_CURRENT_NODE}:27017':
+                members.append(member)
+        config['config']['members'] = members
+        config['config']['version'] += 1
+        _ = client.admin.command("replSetReconfig", config['config'])
+        print("The MongoDB Replica set has been removed from the cluster.")
+    except ServerSelectionTimeoutError as ex:
+        print("The other MongoDB nodes are not reachable, stopping the services.")
+        exit(3)
+    except Exception as ex:
+        print("Error occured while removing node from the cluster.")
+        print(str(ex))
+        raise ex
+    finally:
+        client.close()
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(
+        prog='./replica_set',
+        description='Initiate MongoDB replica set.',
+        epilog='For more info, please read the user guide.'
+    )
+    parser.add_argument('-i', '--initiate', type=lambda x:bool(strtobool(x)), nargs='?', const=True, default=False, help='Initiate MongoDB replica set with current node as a primary.')
+    parser.add_argument('-j', '--join', type=lambda x:bool(strtobool(x)), nargs='?', const=True, default=False, help='Add the current node to the replica set.')
+    parser.add_argument('-r', '--remove', type=lambda x:bool(strtobool(x)), nargs='?', const=True, default=False, help='Remove the current node from the replica set.')
+    args = parser.parse_args()
+
+    try:
+        # Create Mongo replica set
+        if args.initiate:
+            connection_string = f"mongodb://root:{MAINTENANCE_PASSWORD_ESCAPED}@{HA_CURRENT_NODE}:27017/admin"
+            create_replica_set(connection_string)
+
+        # Join the node to the Mongo replica set
+        elif args.join:
+            hostname = ",".join([f"{ip}:27017" for ip in os.environ["HA_IP_LIST"].split(",") if ip != HA_CURRENT_NODE])
+            connection_string = f"mongodb://root:{MAINTENANCE_PASSWORD_ESCAPED}@{hostname}/admin?replicaSet=mongo_replica_set"
+            join_replica_set(connection_string)
+
+        # Remove the node from the Mongo replica set
+        elif args.remove:
+            hostname = ",".join([f"{ip}:27017" for ip in os.environ["HA_IP_LIST"].split(",")])
+            connection_string = f"mongodb://root:{MAINTENANCE_PASSWORD_ESCAPED}@{hostname}/admin?replicaSet=mongo_replica_set"
+            remove_replica_set(connection_string)
+
+        else:
+            print("Please provide at least one option to run this script.")
+    except Exception as ex:
+        # print(str(ex))
+        exit(1)
+    exit(0)
