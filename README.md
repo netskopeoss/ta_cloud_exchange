@@ -14,7 +14,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
  - Use latest docker version (https://docs.docker.com/engine/install/centos/)
  - Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
 
-## Install Procedure
+## Install Procedure for standalone deployment
  
  1. Clone repository to volume with requisite 20 GB of storage<br>
 	a. `mkdir netskope`<br>
@@ -22,7 +22,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 	c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br> 
 	Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
  2. Execute the setup script:<br>
-	a. `sudo python3 ./setup`<br>
+	a. `sudo ./setup`<br>
  4. Launch Cloud Exchange 3<br>
  	a. `sudo ./start`<br>
  5. Open Browser to `http(s)://<host ip address>`<br>
@@ -44,15 +44,13 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
    4.0K drwxrwxr-x 6 ubuntu ubuntu 4.0K Sep  9 08:53
    4.0K drwxrwxr-x 3 ubuntu ubuntu 4.0K Nov  1 18:47 
    4.0K drwxrwxr-x 3 ubuntu ubuntu 4.0K Sep 29 12:31 custom_plugins
-   4.0K drwxrwxr-x 3 1001 1001 4.0K Sep 29 12:37 mongo-data
+   4.0K drwxrwxr-x 3 999 999 4.0K Sep 29 12:37 mongo-data
    4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep  9 08:53 rabbitmq
    4.0K drwxrwxr-x 2 ubuntu ubuntu 4.0K Sep 10 14:49 ssl_certs
    ```
    Note the mask on line with custom_plugins - mask should be 775<br> 
-   Note ownership of mongo-data - should represent 1001:1001
+   Note ownership of mongo-data - should represent 999:999
+   Note ownership of rabbitmq - should represent 1001:1001
 
 3. If you get `SyntaxError: invalid syntax` while running `sudo ./setup`
    - Try to run `sudo python3 setup`
-
- 
- 

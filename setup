@@ -2,7 +2,12 @@
 from enum import Enum
 from getpass import getpass
 import os
+import json
+import argparse
 import stat as st
+import ipaddress
+from secrets import token_bytes
+from base64 import b64encode
 from os import stat
 import re
 import socket
@@ -70,12 +75,14 @@ DEFAULT_INPUTS = {
         "help": "",
         "user_input": "Do you want to enable TLSv1.2 along with TLSv1.3 for CE UI",
     },
+    "UI_PROTOCOL": {"default": "https", "skip": True, "help": ""},
     "REQUESTS_TIMEOUT": {"default": 300, "skip": True, "help": ""},
     "POPEN_TIMEOUT": {"default": 1800, "skip": True, "help": ""},
 }
 
 AVAILABLE_INPUTS = {}
 CHECKS = {}
+IN_BUILT_PLUGINS = False
 
 MIN_CPU = 2
 MIN_MEM_KB = 3500000
@@ -85,9 +92,9 @@ MIN_DOCKER_COMPOSE_VERSION = "1.29.0"
 MIN_PODMAN_VERSION = "3.4.2"
 MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 
-N = 4
-CURRENT_VERSION = "4.2.0"
-PREVIOUS_VERSION = "3.4.1"
+N = 5
+CURRENT_VERSION = "5.0.0"
+PREVIOUS_VERSION = "4.2.0"
 CE_VERSION_1 = f"CE v{N}-{CURRENT_VERSION}"
 CE_VERSION_2 = f"CE v{N-1}-{PREVIOUS_VERSION}"
 CE_VERSION_3 = "CE beta-latest"
@@ -107,7 +114,9 @@ GIT_PLUGIN_REPO = "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
 
 MONGO_USER_ID = 999
 
-EXTRA_SMALL_RAM_THRESOLD = 6  # in GB
+is_ui_running = False
+is_rabbitmq_running = False
+is_mongodb_running = False
 
 class Status(Enum):
     PASS = ("PASS",)
@@ -159,45 +168,115 @@ def compare_versions(version1, version2):
     return True
 
 
-def put_proxy_in_env():
+def _get_container_name(container_info):
+    container_name = container_info.get("Names", "")
+    if isinstance(container_name, list):
+        container_name = container_name[0]
+    return container_name
+
+
+def strtobool(val):
+    val = val.lower()
+    if val in ('y', 'yes', 't', 'true', 'on', '1'):
+        return 1
+    elif val in ('n', 'no', 'f', 'false', 'off', '0'):
+        return 0
+    else:
+        raise ValueError("invalid truth value %r" % (val,))
+
+
+def ce_as_vm_check():
+    return os.path.exists("/.cloud_exchange_vm.marker")
+
+
+def fetch_container_info():
+    global is_ui_running, is_rabbitmq_running, is_mongodb_running
     try:
-        with open(".env", "w") as f:
+        p = subprocess.Popen(
+            ["docker", "ps", "--format", "json"],
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+        )
+        out, err = p.communicate()
+        if err:
+            p = subprocess.Popen(
+                ["podman", "ps", "--format", "json"],
+                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+            )
+            out, err = p.communicate()
+            containers = json.loads(out.decode('utf-8'))
+            if err:
+                print_warning(f"Unable to fetch container information. {err.decode('utf-8')}\n")
+                return
+        else:
+            containers = [json.loads(line) for line in out.decode('utf-8').splitlines()]
+
+        for container_info in containers:
+            if "_mongodb-primary" in _get_container_name(container_info):
+                is_mongodb_running = True
+            elif "_rabbitmq-stats" in _get_container_name(container_info):
+                is_rabbitmq_running = True
+            elif "_ui" in _get_container_name(container_info):
+                is_ui_running = True
+    except Exception:
+        print_warning("Unable to fetch container information.")
+
+
+def put_proxy_in_env(location=".env"):
+    try:
+        with open(location, "w") as f:
             for key, value in AVAILABLE_INPUTS.items():
                 f.write(f"{key}={value}\n")
     except Exception as e:
         raise Exception(f"Error occurred while putting proxy variables: {e}")
 
 
-def put_env_variable(inputs):
+def put_env_variable(inputs, location=".env"):
+    inputs = dict(inputs)
+    if location != ".env":
+        inputs.pop('HA_CURRENT_NODE', None)
+        inputs.pop('HA_NFS_DATA_DIRECTORY', None)
     try:
-        with open(".env", "w") as f:
+        with open(location, "w") as f:
             for key, value in inputs.items():
                 f.write(f"{key}={value}\n")
     except Exception as e:
         raise Exception(f"Error occurred while putting env variables: {e}")
 
 
-def create_env_if_not_exist():
+def create_env_if_not_exist(location=".env"):
     try:
-        with open(".env", "a") as f:
+        with open(location, "a") as f:
             pass
     except Exception as e:
         raise Exception(f"Error occurred while creating file: {e}")
 
 
-def get_all_existed_env_variable():
-    AVAILABLE_INPUTS["HTTP_PROXY"] = ""
-    AVAILABLE_INPUTS["HTTPS_PROXY"] = ""
+def get_all_existed_env_variable(location=".env"):
+    AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = ""
+    AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = ""
     AVAILABLE_INPUTS["DESTINATION_PATH"] = ""
 
     try:
-        with open(".env", "r") as f:
-            if os.stat(".env").st_size > 0:
-                with open(f".env.{int(time.time())}", "w+") as backup:
+        with open(location, "r") as f:
+            if os.stat(location).st_size > 0:
+                with open(f"{location}.{int(time.time())}", "w+") as backup:
                     for line in f.readlines():
                         backup.write(line)
                         key, value = line.split("=", 1)
                         AVAILABLE_INPUTS[key] = value.strip()
+
+        if AVAILABLE_INPUTS.get("HTTPS_PROXY"):
+            AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = AVAILABLE_INPUTS["HTTPS_PROXY"]
+            AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = AVAILABLE_INPUTS["HTTPS_PROXY"]
+
+            AVAILABLE_INPUTS.pop("HTTP_PROXY", None)
+            AVAILABLE_INPUTS.pop("HTTPS_PROXY", None)
+        if AVAILABLE_INPUTS.get("RABBITMQ_CUSTOM_CONF_PATH"):
+            AVAILABLE_INPUTS.pop("RABBITMQ_CUSTOM_CONF_PATH", None)
     except Exception as e:
         raise Exception(f"Error occurred while getting env variables: {e}")
 
@@ -224,10 +303,17 @@ def set_directory_permission(directory, command):
         )
 
 
+def _get_cert_location():
+    cert_file = "data/ssl_certs/cte_cert.crt"
+    key_file = "data/ssl_certs/cte_cert_key.key"
+    if AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY'):
+        cert_file = f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs/cte_cert.crt"
+        key_file = f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs/cte_cert_key.key"
+    return cert_file, key_file
+
 def check_for_certs():
     try:
-        cert_file = "data/ssl_certs/cte_cert.crt"
-        key_file = "data/ssl_certs/cte_cert_key.key"
+        cert_file, key_file = _get_cert_location()
         if os.path.isfile(cert_file) and os.path.isfile(key_file):
             return True
         return False
@@ -236,13 +322,13 @@ def check_for_certs():
             f"Error occurred while checking for SSL certs. Error: {e}"
         )
 
-
 def create_self_signed_ssl_certs():
     try:
+        cert_file, key_file = _get_cert_location()
         print(
             f"Generating self signed certificate with validity of one year..."
         )
-        command = "openssl req -x509 -newkey rsa:4096 -keyout data/ssl_certs/cte_cert_key.key -out data/ssl_certs/cte_cert.crt -sha256 -days 365 -nodes -subj /CN=localhost -extensions extendedkeyusage -config data/ssl_certs/extendedkeyusage.txt"
+        command = f"openssl req -x509 -newkey rsa:4096 -keyout {key_file} -out {cert_file} -sha256 -days 365 -nodes -subj /CN=localhost -extensions extendedkeyusage -config data/ssl_certs/extendedkeyusage.txt"
         p = subprocess.Popen(
             command.split(),
             stderr=subprocess.PIPE,
@@ -252,11 +338,10 @@ def create_self_signed_ssl_certs():
         out, err = p.communicate()
         if p.returncode == 0:
             print(f"{err.decode('utf-8')}\n")
-            command = "sudo chmod 666 data/ssl_certs/cte_cert.crt"
-            set_directory_permission("data/ssl_certs/cte_cert.crt", command)
-            command_key = "sudo chmod 666 data/ssl_certs/cte_cert_key.key"
-            set_directory_permission(
-                "data/ssl_certs/cte_cert_key.key", command_key)
+            command = f"sudo chmod 666 {cert_file}"
+            set_directory_permission(cert_file, command)
+            command_key = f"sudo chmod 666 {key_file}"
+            set_directory_permission(key_file, command_key)
         else:
             raise Exception(f"{err.decode('utf-8')}\n")
     except Exception as e:
@@ -264,7 +349,6 @@ def create_self_signed_ssl_certs():
         raise Exception(
             f"Error occurred while generating self-signed ssl certificates. Error: {e}"
         )
-
 
 def check_machine_specs():
     print("\nVerifying minimum system requirements...")
@@ -326,17 +410,34 @@ def check_machine_specs():
         print_warning(f"Could not verify Disk information of the machine")
         CHECKS["Disk Space Check"] = Status.NOT_VERIFIED
 
-    # Check 15672 Port availability
+    # Check 15672 and 27017 Port availability
     try:
+        port_flag = True
+        for port in [4369, 5672, 15672, 25672]:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(("127.0.0.1", port))
+            if result == 0:
+                if is_rabbitmq_running:
+                    print_warning("RabbitMQ container is already running.")
+                    break
+                else:
+                    print_fail(f"Port {port} is already in use.")
+                    port_flag = False
+            else:
+                print_pass(f"Port {port} is available.")
+
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        result = sock.connect_ex(("127.0.0.1", 15672))
+        result = sock.connect_ex(("127.0.0.1", 27017))
         if result == 0:
-            print_fail(
-                f"Port 15672 is already in use. (Please stop the Netskope CE instance if already running (using `./stop`) and re-run the setup script.)")
-            CHECKS["Port Check"] = Status.FAIL
+            if is_mongodb_running:
+                print_warning("MongoDB container is already running.")
+            else:
+                print_fail(f"Port 27017 is already in use.")
+                port_flag = False
         else:
-            print_pass(f"Port 15672 is available.")
-            CHECKS["Port Check"] = Status.PASS
+            print_pass(f"Port 27017 is available.")
+
+        CHECKS["Port Check"] = Status.PASS if port_flag else Status.FAIL
     except Exception as e:
         # print(e)
         print_warning(f"Could not verify Port information of the machine")
@@ -508,6 +609,24 @@ def parse_proxy(url):
     return f"{url.scheme}://{url.hostname}:{url.port}"
 
 
+def set_ce_version_for_vm():
+    try:
+        from ce_as_vm_tags import BETA_OPT_IN, CORE_TAG, UI_TAG
+        AVAILABLE_INPUTS["CORE_TAG"] = CORE_TAG
+        AVAILABLE_INPUTS["UI_TAG"] = UI_TAG
+        if BETA_OPT_IN.lower() == "yes":
+            AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
+        else:
+            AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
+        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_1_LATEST_TAG
+        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_1_LATEST_TAG
+        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
+        from ce_as_vm_tags import IN_BUILT_PLUGINS as in_built_plugins
+        global IN_BUILT_PLUGINS
+        IN_BUILT_PLUGINS = in_built_plugins.lower() == "true" or in_built_plugins == True
+    except Exception:
+        ask_for_ce_version()
+
 def ask_for_ce_version():
     while True:
         current_version = ""
@@ -543,18 +662,21 @@ def ask_for_ce_version():
         AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
         AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_1_LATEST_TAG
         AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_1_LATEST_TAG
+        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
     elif n == 2:
         AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_2_TAG
         AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_2_TAG
         AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
         AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_2_LATEST_TAG
         AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_2_LATEST_TAG
+        AVAILABLE_INPUTS["INSTALL_VERSION"] = PREVIOUS_VERSION
     elif n == 3:
         AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_BETA_TAG
         AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_BETA_TAG
         AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
         AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_BETA_TAG
         AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_BETA_TAG
+        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
 
 
 def ask_for_initial_inputs():
@@ -568,7 +690,7 @@ def ask_for_initial_inputs():
 
     if isProxy == "y" or isProxy == "yes":
         # HTTPS_PROXY
-        cur_https_proxy = parse_proxy(AVAILABLE_INPUTS["HTTPS_PROXY"])
+        cur_https_proxy = parse_proxy(AVAILABLE_INPUTS["CORE_HTTPS_PROXY"])
 
         print(
             f"\nEnter Proxy URL (e.g. http(s)://10.0.0.0:3128)  {('(Current: ' + cur_https_proxy + ')') if cur_https_proxy is not None else ''}"
@@ -596,19 +718,19 @@ def ask_for_initial_inputs():
                     "Enter proxy password: \n> "
                 ).strip()
 
-        AVAILABLE_INPUTS["HTTPS_PROXY"] = prepare_proxy(
+        AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = prepare_proxy(
             https_proxy,
             username=https_proxy_username,
             password=https_proxy_password,
         )
-        AVAILABLE_INPUTS["HTTP_PROXY"] = AVAILABLE_INPUTS["HTTPS_PROXY"]
+        AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = AVAILABLE_INPUTS["CORE_HTTPS_PROXY"]
 
         print(
             "\n\033[1;37mNOTE: These proxy details will be reflected on the Settings > General > Proxy page on Netskope CE UI.\n\033[0;37m"
         )
     else:
-        AVAILABLE_INPUTS["HTTP_PROXY"] = ""
-        AVAILABLE_INPUTS["HTTPS_PROXY"] = ""
+        AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = ""
+        AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = ""
 
     tenant_name = ""
     while True:
@@ -668,8 +790,8 @@ def connectivity_check_for_analytics():
         url = "https://reporting.netskope.tech/"
         req = urllib.request.Request(url)
         proxy = None
-        if AVAILABLE_INPUTS.get("HTTPS_PROXY", "") != "":
-            proxy = AVAILABLE_INPUTS.get("HTTPS_PROXY")
+        if AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", "") != "":
+            proxy = AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY")
         proxies = {}
         if proxy is not None:
             proxies["https"] = proxy
@@ -701,8 +823,8 @@ def handle_connectivity(name, url):
     try:
         req = urllib.request.Request(url)
         proxy = None
-        if AVAILABLE_INPUTS.get("HTTPS_PROXY", "") != "":
-            proxy = AVAILABLE_INPUTS.get("HTTPS_PROXY")
+        if AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", "") != "":
+            proxy = AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY")
 
         proxies = {}
 
@@ -750,7 +872,7 @@ def handle_connectivity(name, url):
 
 
 def check_github_connctivity():
-    os.environ["HTTPS_PROXY"] = AVAILABLE_INPUTS.get("HTTPS_PROXY", "")
+    os.environ["HTTPS_PROXY"] = AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", "")
     command = f"git ls-remote {GIT_PLUGIN_REPO}"
     p = subprocess.Popen(
         command.split(),
@@ -801,12 +923,15 @@ def check_connectivity():
     print(
         "\nVerifying the connectivity for pre-requisite outbound network calls..."
     )
-    timeout(60, check_github_connctivity)
-    timeout(60, handle_connectivity, "Docker Hub", "https://hub.docker.com")
+    if not IN_BUILT_PLUGINS:
+        timeout(60, check_github_connctivity)
 
-    print(
-        '\033[1;37mNOTE: This connectivity check is only for the Docker Hub (https://hub.docker.com). Docker images are pulled from CDN. Please make sure that you have the required connectivity to pull the docker images.\033[0;37m'
-    )
+    if not ce_as_vm_check():
+        timeout(60, handle_connectivity, "Docker Hub", "https://hub.docker.com")
+
+        print(
+            '\033[1;37mNOTE: This connectivity check is only for the Docker Hub (https://hub.docker.com). Docker images are pulled from CDN. Please make sure that you have the required connectivity to pull the docker images.\033[0;37m'
+        )
 
     tenant_name = AVAILABLE_INPUTS.get("NETSKOPE_TENANT")
     if tenant_name != "test":
@@ -894,41 +1019,21 @@ def check_and_apply_file_permissions():
             CHECKS["MONGO"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                if (
-                    stat("data/mongo-data").st_uid == MONGO_USER_ID
-                    and stat("data/mongo-data").st_gid == MONGO_USER_ID
-                ):
-                    print_pass(
-                        f"Verified owner of data/mongo-data is user with uid {MONGO_USER_ID}"
-                    )
-                    CHECKS["MONGO"] = Status.PASS
-                else:
-                    command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
-                    set_directory_permission("data/mongo-data", command)
-                    print_pass(
-                        f"Owner of data/mongo-data is not accurate... Changing owner of data/mongo-data to user with uid {MONGO_USER_ID}"
-                    )
-                    CHECKS["MONGO"] = Status.PASS
+                command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
+                set_directory_permission("data/mongo-data", command)
+                print_pass(
+                    f"Changing owner of data/mongo-data to user with uid {MONGO_USER_ID}"
+                )
+                CHECKS["MONGO"] = Status.PASS
 
             # mongo_data directory file
             try:
-                file_perms = oct(stat("data/mongo-data").st_mode & 0o777)
-                if (
-                    (int(file_perms[2]) & 4)
-                    and (int(file_perms[2]) & 2)
-                    and (int(file_perms[2]) & 1)
-                    and (int(file_perms[3]) & 4)
-                    and (int(file_perms[4]) & 4)
-                ):
-                    print_pass(f"Verified file permissions of data/mongo-data")
-                    CHECKS["MONGO-FILE"] = Status.PASS
-                else:
-                    command = "sudo chmod -R 744 data/mongo-data"
-                    set_directory_permission("data/mongo-data", command)
-                    print_pass(
-                        f"File permissions of data/mongo-data are not accurate... Adding read/write permissions to data/mongo-data"
-                    )
-                    CHECKS["MONGO-FILE"] = Status.PASS
+                command = "sudo chmod -R 744 data/mongo-data"
+                set_directory_permission("data/mongo-data", command)
+                print_pass(
+                    f"Adding read/write permissions to data/mongo-data"
+                )
+                CHECKS["MONGO-FILE"] = Status.PASS
             except Exception as e:
                 print_fail(
                     f"Error occurred while verifying file permissions for data/mongo-data"
@@ -949,43 +1054,21 @@ def check_and_apply_file_permissions():
             CHECKS["MONGO-INIT"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                if (
-                    stat("data/database-init/mongo-init.sh").st_uid == MONGO_USER_ID
-                    and stat("data/database-init/mongo-init.sh").st_gid == MONGO_USER_ID
-                ):
-                    print_pass(
-                        f"Verified owner of data/database-init/mongo-init.sh is user with uid {MONGO_USER_ID}"
-                    )
-                    CHECKS["MONGO-INIT"] = Status.PASS
-                else:
-                    command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/database-init"
-                    set_directory_permission("data/database-init", command)
-                    print_pass(
-                        "Owner of data/database-init/mongo-init.sh is not accurate... "
-                        f"Changing owner of data/database-init/mongo-init.sh to user with uid {MONGO_USER_ID}"
-                    )
-                    CHECKS["MONGO-INIT"] = Status.PASS
+                command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/database-init"
+                set_directory_permission("data/database-init", command)
+                print_pass(
+                    f"Changing owner of data/database-init/mongo-init.sh to user with uid {MONGO_USER_ID}"
+                )
+                CHECKS["MONGO-INIT"] = Status.PASS
 
             # mongo-init.sh permissions check
             try:
-                file_perms = oct(stat("data/database-init/mongo-init.sh").st_mode & 0o777)
-                if (
-                    (int(file_perms[2]) & 4)
-                    and (int(file_perms[2]) & 2)
-                    and (int(file_perms[3]) & 4)
-                    and (int(file_perms[3]) & 2)
-                    and (int(file_perms[4]) & 4)
-                ):
-                    print_pass(f"Verified file permissions of data/database-init/mongo-init.sh")
-                    CHECKS["MONGO-INIT-FILE"] = Status.PASS
-                else:
-                    command = "sudo chmod -R 664 data/database-init"
-                    set_directory_permission("data/database-init", command)
-                    print_pass(
-                        "File permissions of data/database-init/mongo-init.sh are not accurate... "
-                        "Adding read/write permissions to data/database-init/mongo-init.sh"
-                    )
-                    CHECKS["MONGO-INIT-FILE"] = Status.PASS
+                command = "sudo chmod -R 775 data/database-init"
+                set_directory_permission("data/database-init", command)
+                print_pass(
+                    "Adding read/write permissions to data/database-init/mongo-init.sh"
+                )
+                CHECKS["MONGO-INIT-FILE"] = Status.PASS
             except Exception as e:
                 print_fail(
                     "Error occurred while verifying file permissions for data/database-init/mongo-init.sh"
@@ -1009,40 +1092,20 @@ def check_and_apply_file_permissions():
             CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                if (
-                    stat("data/custom_plugins").st_uid == 1001
-                    and stat("data/custom_plugins").st_gid == 1001
-                ):
-                    print_pass(
-                        f"Verified owner of data/custom_plugins is user with uid 1001"
-                    )
-                else:
-                    command = "sudo chown -R 1001:1001 data/custom_plugins"
-                    set_directory_permission("data/custom_plugins", command)
-                    print_pass(
-                        f"Owner of data/custom_plugins is not accurate... Changing owner of data/custom_plugins to user with uid 1001"
-                    )
+                command = "sudo chown -R 1001:1001 data/custom_plugins"
+                set_directory_permission("data/custom_plugins", command)
+                print_pass(
+                    f"Changing owner of data/custom_plugins to user with uid 1001"
+                )
                 CHECKS["CUSTOM_PLUGINS"] = Status.PASS
 
             try:
-                file_perms = oct(stat("data/custom_plugins").st_mode & 0o777)
-                if (
-                    (int(file_perms[2]) & 4)
-                    and (int(file_perms[2]) & 2)
-                    and (int(file_perms[2]) & 1)
-                    and (int(file_perms[3]) & 4)
-                    and (int(file_perms[4]) & 4)
-                ):
-                    print_pass(
-                        f"Verified file permissions of data/custom_plugins")
-                    CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
-                else:
-                    command = "sudo chmod -R 744 data/custom_plugins"
-                    set_directory_permission("data/custom_plugins", command)
-                    print_pass(
-                        f"File permissions of data/custom_plugins are not accurate... Adding read/write permissions to data/custom_plugins"
-                    )
-                    CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
+                command = "sudo chmod -R 744 data/custom_plugins"
+                set_directory_permission("data/custom_plugins", command)
+                print_pass(
+                    "Adding read/write permissions to data/custom_plugins"
+                )
+                CHECKS["CUSTOM_PLUGINS_FILE"] = Status.PASS
             except Exception as e:
                 print_fail(
                     f"Error occurred while verifying file permissions for data/custom_plugins"
@@ -1065,77 +1128,35 @@ def check_and_apply_file_permissions():
             CHECKS["SSL_CERTS"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                if (
-                    stat("data/ssl_certs").st_uid == 1001
-                    and stat("data/ssl_certs").st_gid == 1001
-                ):
-                    print_pass(
-                        f"Verified owner of data/ssl_certs is user with uid 1001"
-                    )
-                    CHECKS["SSL_CERTS"] = Status.PASS
-                else:
-                    command = "sudo chown -R 1001:1001 data/ssl_certs"
-                    set_directory_permission("data/ssl_certs", command)
-                    print_pass(
-                        f"Owner of data/ssl_certs is not accurate... Changing owner of data/ssl_certs to user with uid 1001"
-                    )
-                    CHECKS["SSL_CERTS"] = Status.PASS
-
-            file_perms = oct(stat("data/ssl_certs").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[3]) & 2)
-                and (int(file_perms[4]) & 4)
-                and (int(file_perms[4]) & 2)
-            ):
-                print_pass(f"Verified file permissions of data/ssl_certs")
-                CHECKS["SSL_CERTS"] = Status.PASS
-            else:
-                command = "sudo chmod 766 data/ssl_certs"
+                command = "sudo chown -R 1001:1001 data/ssl_certs"
                 set_directory_permission("data/ssl_certs", command)
                 print_pass(
-                    f"File permissions of data/ssl_certs are not accurate... Adding read/write permissions to data/ssl_certs"
+                    f"Changing owner of data/ssl_certs to user with uid 1001"
                 )
                 CHECKS["SSL_CERTS"] = Status.PASS
 
+            command = "sudo chmod 766 data/ssl_certs"
+            set_directory_permission("data/ssl_certs", command)
+            print_pass(
+                f"Adding read/write permissions to data/ssl_certs"
+            )
+            CHECKS["SSL_CERTS"] = Status.PASS
+
         if os.path.exists("data/ssl_certs/cte_cert.crt"):
-            file_perms = oct(
-                stat("data/ssl_certs/cte_cert.crt").st_mode & 0o777)
-            if not (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[3]) & 2)
-                and (int(file_perms[4]) & 4)
-                and (int(file_perms[4]) & 2)
-            ):
-                command = "sudo chmod 666 data/ssl_certs/cte_cert.crt"
-                set_directory_permission(
-                    "data/ssl_certs/cte_cert.crt", command)
-                print_pass(
-                    f"File permissions of data/ssl_certs/cte_cert.crt are not accurate... Adding read/write permissions to data/ssl_certs/cte_cert.crt"
-                )
+            command = "sudo chmod 666 data/ssl_certs/cte_cert.crt"
+            set_directory_permission(
+                "data/ssl_certs/cte_cert.crt", command)
+            print_pass(
+                f"Adding read/write permissions to data/ssl_certs/cte_cert.crt"
+            )
 
         if os.path.exists("data/ssl_certs/cte_cert_key.key"):
-            file_perms = oct(
-                stat("data/ssl_certs/cte_cert_key.key").st_mode & 0o777)
-            if not (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[3]) & 2)
-                and (int(file_perms[4]) & 4)
-                and (int(file_perms[4]) & 2)
-            ):
-                command = "sudo chmod 666 data/ssl_certs/cte_cert_key.key"
-                set_directory_permission(
-                    "data/ssl_certs/cte_cert_key.key", command)
-                print_pass(
-                    f"File permissions of data/ssl_certs/cte_cert_key.key are not accurate... Adding read/write permissions to data/ssl_certs/cte_cert_key.key"
-                )
+            command = "sudo chmod 666 data/ssl_certs/cte_cert_key.key"
+            set_directory_permission(
+                "data/ssl_certs/cte_cert_key.key", command)
+            print_pass(
+                f"Adding read/write permissions to data/ssl_certs/cte_cert_key.key"
+            )
 
     except Exception as e:
         print_fail(
@@ -1152,39 +1173,18 @@ def check_and_apply_file_permissions():
             CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                if (
-                    stat("data/rabbitmq").st_uid == 1001
-                    and stat("data/rabbitmq").st_gid == 1001
-                ):
-                    print_pass(
-                        "Verified owner of data/rabbitmq is user with uid 1001"
-                    )
-                    CHECKS["RABBITMQ"] = Status.PASS
-                else:
-                    command = "sudo chown -R 1001:1001 data/rabbitmq"
-                    set_directory_permission("data/rabbitmq", command)
-                    print_pass(
-                        "Owner of data/rabbitmq is not accurate... Changing owner of data/rabbitmq to user with uid 1001"
-                    )
-                    CHECKS["RABBITMQ"] = Status.PASS
-
-            file_perms = oct(stat("data/rabbitmq").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[4]) & 4)
-            ):
-                print_pass("Verified file permissions of data/rabbitmq")
-                CHECKS["RABBITMQ"] = Status.PASS
-            else:
-                command = "sudo chmod -R 744 data/rabbitmq"
+                command = "sudo chown -R 1001:1001 data/rabbitmq"
                 set_directory_permission("data/rabbitmq", command)
                 print_pass(
-                    "File permissions of data/rabbitmq are not accurate... Adding read permissions to data/rabbitmq"
+                    "Changing owner of data/rabbitmq to user with uid 1001"
                 )
                 CHECKS["RABBITMQ"] = Status.PASS
+            command = "sudo chmod -R 744 data/rabbitmq"
+            set_directory_permission("data/rabbitmq", command)
+            print_pass(
+                "Adding read permissions to data/rabbitmq"
+            )
+            CHECKS["RABBITMQ"] = Status.PASS
     except Exception:
         print_fail(
             "Error occurred while verifying file permissions/owner information for data/rabbitmq directory"
@@ -1198,27 +1198,12 @@ def check_and_apply_file_permissions():
             )
             CHECKS["ca_certs"] = Status.FAIL
         else:
-            file_perms = oct(stat("data/ca_certs").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 4)
-                and (int(file_perms[2]) & 2)
-                and (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 4)
-                and (int(file_perms[3]) & 2)
-                and (int(file_perms[3]) & 1)
-                and (int(file_perms[4]) & 4)
-                and (int(file_perms[4]) & 2)
-                and (int(file_perms[4]) & 1)
-            ):
-                print_pass(f"Verified file permissions of data/ca_certs")
-                CHECKS["ca_certs"] = Status.PASS
-            else:
-                command = "sudo chmod -R 777 data/ca_certs"
-                set_directory_permission("data/ca_certs", command)
-                print_pass(
-                    f"File permissions of data/ca_certs are not accurate... Adding read permissions to data/ca_certs"
-                )
-                CHECKS["ca_certs"] = Status.PASS
+            command = "sudo chmod -R 777 data/ca_certs"
+            set_directory_permission("data/ca_certs", command)
+            print_pass(
+                f"Adding read permissions to data/ca_certs"
+            )
+            CHECKS["ca_certs"] = Status.PASS
     except Exception as e:
         print_fail(
             f"Error occurred while verifying file permissions for data/ca_certs"
@@ -1233,21 +1218,12 @@ def check_and_apply_file_permissions():
             )
             CHECKS["START"] = Status.FAIL
         else:
-            file_perms = oct(stat("start").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 1)
-                and (int(file_perms[4]) & 1)
-            ):
-                print_pass(f"Verified file permissions of start script")
-                CHECKS["START"] = Status.PASS
-            else:
-                command = "sudo chmod 555 ./start"
-                set_directory_permission("start", command)
-                print_pass(
-                    f"File permissions of start script are not accurate... Adding execute permissions to start script"
-                )
-                CHECKS["START"] = Status.PASS
+            command = "sudo chmod 555 ./start"
+            set_directory_permission("start", command)
+            print_pass(
+                f"Adding execute permissions to start script"
+            )
+            CHECKS["START"] = Status.PASS
     except Exception as e:
         # print(e)
         print_fail(
@@ -1263,21 +1239,12 @@ def check_and_apply_file_permissions():
             )
             CHECKS["STOP"] = Status.FAIL
         else:
-            file_perms = oct(stat("stop").st_mode & 0o777)
-            if (
-                (int(file_perms[2]) & 1)
-                and (int(file_perms[3]) & 1)
-                and (int(file_perms[4]) & 1)
-            ):
-                print_pass(f"Verified file permissions of stop script")
-                CHECKS["STOP"] = Status.PASS
-            else:
-                command = "sudo chmod 555 ./stop"
-                set_directory_permission("stop", command)
-                print_pass(
-                    f"File permissions of stop script are not accurate... Adding execute permissions to stop script"
-                )
-                CHECKS["STOP"] = Status.PASS
+            command = "sudo chmod 555 ./stop"
+            set_directory_permission("stop", command)
+            print_pass(
+                f"Adding execute permissions to stop script"
+            )
+            CHECKS["STOP"] = Status.PASS
     except Exception as e:
         # print(e)
         print_fail(
@@ -1303,9 +1270,14 @@ def check_port(port):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         result = sock.connect_ex(("127.0.0.1", port))
         if result == 0:
-            print_fail(f"Port {port} is already in use.\033[0;37m\n")
-            CHECKS["UI Port Check"] = Status.FAIL
-            return False
+            if is_ui_running:
+                print_warning("The UI container is already running.")
+                CHECKS["UI Port Check"] = Status.PASS
+                return True
+            else:
+                print_fail(f"Port {port} is already in use.\033[0;37m\n")
+                CHECKS["UI Port Check"] = Status.FAIL
+                return False
         else:
             print_pass(f"Port {port} is available.\n")
             CHECKS["UI Port Check"] = Status.PASS
@@ -1321,7 +1293,7 @@ def pull_from_github():
     myenv["LC_ALL"] = "C"
     print("\nChecking for local changes..")
     pr1 = subprocess.Popen(
-        ['git', 'diff', '-G.'],
+        ["git", "diff", "-G."],
         cwd=os.getcwd(),
         shell=False,
         stdout=subprocess.PIPE,
@@ -1367,7 +1339,7 @@ def migrate_mongo():
 
             # Change owner to 1001 after copying the data
             if platform.system().lower() not in ["darwin"]:
-                command = "sudo chown -R 1001:1001 data/mongo-data"
+                command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
                 set_directory_permission("data/mongo-data", command)
         except Exception as exc:
             print(f"Error while migrating mongo-data: {exc}")
@@ -1445,48 +1417,488 @@ def get_total_physical_memory():
     except Exception:
         pass
 
-def check_for_extra_small_stack_confs():
+def assign_memory_to_rabbitmq_container():
     try:
-        AVAILABLE_INPUTS["RABBITMQ_CUSTOM_CONF_PATH"] = "./data/rabbitmq/custom.conf"
-        AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = "3G"
         mem_bytes = get_total_physical_memory()
         if not mem_bytes:
             return
-        mem_gib = mem_bytes/(1024**3)
-        if mem_gib <= EXTRA_SMALL_RAM_THRESOLD:
-            AVAILABLE_INPUTS["RABBITMQ_CUSTOM_CONF_PATH"] = "./data/rabbitmq/extra_small_custom.conf"
-            AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = "2G"
+        mem_mib = mem_bytes/(1024**2)
+        rabbitmq_allocation_mem = round(mem_mib * (6/32))
+        AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = rabbitmq_allocation_mem
     except Exception:
         pass
+
+def ask_for_config_params():
+    # Ask for Protocol
+    protocol = ""
+    is_ssl_enabled = check_for_certs()
+    if not is_ssl_enabled:
+        while protocol not in ["http", "https"]:
+            protocol = (
+                input(
+                    "\nDo you want to access CE over HTTP, or HTTPS (HTTPS is recommended)? "
+                )
+                .strip()
+                .lower()
+            )
+            if protocol == "http":
+                print("Accessing CE over HTTP is not recommended\n")
+                confim = (
+                    input(
+                        "Do you still want to access CE over HTTP? (y/yes) "
+                    )
+                    .strip()
+                    .lower()
+                )
+                if confim not in ["y", "yes"]:
+                    protocol = ""
+                    continue
+                else:
+                    DEFAULT_INPUTS["ENABLE_TLS_V_1_2"][
+                        "default"
+                    ] = "TLSv1.3"
+                    DEFAULT_INPUTS["ENABLE_TLS_V_1_2"]["skip"] = True
+                    AVAILABLE_INPUTS["UI_PROTOCOL"] = "http"
+            elif protocol == "https":
+                AVAILABLE_INPUTS["UI_PROTOCOL"] = "https"
+                DEFAULT_INPUTS["UI_PORT"]["default"] = 443
+                is_ssl_enabled = (
+                    check_for_certs()
+                )  # Checking if SSL is enabled or not
+                if not is_ssl_enabled:
+                    create_self_signed_ssl_certs()
+                
+                message = "\033[1;37mReplace ./data/ssl_certs/cte_cert.crt and ./data/ssl_certs/cte_cert_key.key files with your custom certificate and key files respectively to use custom SSL certificates.\033[0;37m"
+                if AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY'):
+                    message = message.replace("./data/ssl_certs/", f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs/")
+                print(message)
+            else:
+                print(
+                    "Invalid input... Valid inputs are 'http' or 'https'.\n"
+                )
+    else:
+        DEFAULT_INPUTS["UI_PORT"]["default"] = 443
+
+    print()
+
+    # Ask for all configuration parameters
+    for key, item in DEFAULT_INPUTS.items():
+        data = ""
+        if not item["skip"]:
+            if key not in AVAILABLE_INPUTS:
+                if item["help"]:
+                    print(item["help"])
+                if item.get("mandatory", False):
+                    user_input = item.get("user_input")
+                    if key == "JWT_SECRET":
+                        data = ""
+                        while data == "":
+                            data = getpass(f"> {user_input}: ").strip()
+                            if data == "":
+                                print(
+                                    "JWT Secret can not be empty. Please try again.\n"
+                                )
+                    elif key == "MAINTENANCE_PASSWORD":
+                        data = "a"
+                        confirm_data = "b"
+                        while data != confirm_data or len(data) == 0:
+                            data = "a"
+                            confirm_data = "b"
+                            data = getpass(f"> {user_input}: ").strip()
+                            if data == "":
+                                print(
+                                    "Maintenance password can not be empty. Please try again.\n"
+                                )
+                                continue
+
+                            if (
+                                ("\\" in data)
+                                or ("/" in data)
+                                or ("'" in data)
+                                or ('"' in data)
+                                or (" " in data)
+                            ):
+                                print(
+                                    "Maintenance password can not contain \\ / space ' \" Please try again.\n"
+                                )
+                                continue
+
+                            confirm_data = getpass(
+                                f"\n> Confirm maintenance password: "
+                            ).strip()
+                            if data != confirm_data:
+                                print(
+                                    "Maintenance password and Confirm maintenance password do not match. Please try again.\n"
+                                )
+                        data = f"'{data}'"
+                    else:
+                        data = input(f"> {user_input}: ").strip()
+                else:
+                    user_input = item.get("user_input")
+                    if user_input:
+                        if key == "UI_PORT":
+                            i = 0
+                            while True:
+                                if i >= 3:
+                                    print(
+                                        "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
+                                    exit(1)
+                                data = input(
+                                    f"> {user_input} (Default: \"{item['default']}\"): "
+                                ).strip()
+                                if validate_port(data):
+                                    data = item['default'] if data == "" else data
+                                    if check_port(int(data)):
+                                        print(
+                                            '\033[1;37mNOTE: This port will be used to access the Netskope CE UI. Please make sure that inbound traffic to this port is allowed.\n\033[0;37m'
+                                        )
+                                        break
+                                else:
+                                    print(
+                                        "Invalid port provided... Port should be within 1 to 65535 range...\n")
+                                i += 1
+                        else:
+                            data = input(
+                                f"> {user_input} (Default: \"{item['default']}\"): "
+                            ).strip()
+                    else:
+                        data = input(
+                            f"> Enter {key} (Default: \"{item['default']}\"): "
+                        ).strip()
+
+            else:
+                if key != "MAINTENANCE_PASSWORD":
+                    if item["help"]:
+                        print(item["help"])
+                    user_input = item.get("user_input", None)
+                    if user_input:
+                        if key == "JWT_SECRET":
+                            data = ""
+                            while data == "":
+                                data = getpass(f"> {user_input}: ").strip()
+                                if data == "":
+                                    print(
+                                        "JWT Secret should not be empty. Please try again.\n"
+                                    )
+                        elif key == "UI_PORT":
+                            i = 0
+                            while True:
+                                if i >= 3:
+                                    print(
+                                        "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
+                                    exit(1)
+                                data = input(
+                                    f"> {user_input} (Current: \"{AVAILABLE_INPUTS[key]}\"): "
+                                ).strip()
+                                if validate_port(data):
+                                    data = AVAILABLE_INPUTS[key] if data == "" else data
+                                    if check_port(int(data)):
+                                        print(
+                                            '\033[1;37mNOTE: This port will be used to access the Netskope CE UI. Please make sure that inbound traffic to this port is allowed.\n\033[0;37m'
+                                        )
+                                        break
+                                else:
+                                    print(
+                                        "Invalid port provided... Port should be within 1 to 65535 range...\n")
+                                i += 1
+                        else:
+                            data = input(
+                                f'> {user_input} (Current: "{AVAILABLE_INPUTS[key]}"): '
+                            ).strip()
+                    else:
+                        data = input(
+                            f'> Enter {key} (Current: "{AVAILABLE_INPUTS[key]}"): '
+                        ).strip()
+            print("")
+        data = data.strip() if isinstance(data, str) else data
+        if not data:
+            if key not in AVAILABLE_INPUTS:
+                data = item["default"]
+            else:
+                data = AVAILABLE_INPUTS[key]
+        data = data.strip() if isinstance(data, str) else data
+        if key == "MAINTENANCE_PASSWORD_ESCAPED":
+            data = urllib.parse.quote_plus(
+                AVAILABLE_INPUTS["MAINTENANCE_PASSWORD"].strip("'")
+            )
+
+        if key == "ENABLE_TLS_V_1_2":
+            if data.lower() in ["y", "yes"]:
+                data = "\"TLSv1.2 TLSv1.3\""
+            else:
+                data = "TLSv1.3"
+        AVAILABLE_INPUTS[key] = data
+
+        if key == "PULL_THREADS":
+            AVAILABLE_INPUTS[key] = item.get("default", 4)
+
+
+def _validate_ip(ip, debug=True):
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        if debug:
+            print("Invalid IP address provided. Please provide a valid IP address.")
+        return False
+    return True
+
+def _validate_ips(ips):
+    ips = list(filter(None, [x.strip() for x in ips.split(",")]))
+    for ip in ips:
+        if not _validate_ip(ip):
+            return False
+    return True
+
+def _validate_current_node(ip):
+    if ip not in AVAILABLE_INPUTS.get("HA_IP_LIST", "").split(","):
+        print("Provided input doesn't match with any of the listed node addresses.")
+        return False
+    return True
+
+
+def create_required_files(location):
+    if not os.path.exists(f"{location}/config"):
+        os.mkdir(f"{location}/config")
+    os.chmod(f"{location}/config", 0o744)
+
+    if not os.path.exists(f"{location}/config/ssl_certs"):
+        os.mkdir(f"{location}/config/ssl_certs")
+    os.chmod(f"{location}/config/ssl_certs", 0o766)
+    os.chown(f"{location}/config/ssl_certs", 1001, 1001)
+
+    if os.path.exists(f"{location}/config/ssl_certs/cte_cert.crt"):
+        os.chmod(f"{location}/config/ssl_certs/cte_cert.crt", 0o666)
+
+    if os.path.exists(f"{location}/config/ssl_certs/cte_cert_key.key"):
+        os.chmod(f"{location}/config/ssl_certs/cte_cert_key.key", 0o666)
+
+    if not os.path.exists(f"{location}/config/ca_certs"):
+        os.mkdir(f"{location}/config/ca_certs")
+    os.chmod(f"{location}/config/ca_certs", 0o777)
+
+    if not os.path.exists(f"{location}/config/ca_certs/.keep"):
+        open(f"{location}/config/ca_certs/.keep", 'w').close()
+    os.chmod(f"{location}/config/ca_certs/.keep", 0o644)
+
+    if not os.path.exists(f"{location}/repos"):
+        os.mkdir(f"{location}/repos")
+    os.chmod(f"{location}/repos", 0o744)
+    os.chown(f"{location}/repos", 1001, 1001)
+
+    if not os.path.exists(f"{location}/plugins"):
+        os.mkdir(f"{location}/plugins")
+    os.chmod(f"{location}/plugins", 0o744)
+    os.chown(f"{location}/plugins", 1001, 1001)
+
+    if not os.path.exists(f"{location}/custom_plugins"):
+        os.mkdir(f"{location}/custom_plugins")
+    os.chmod(f"{location}/custom_plugins", 0o744)
+    os.chown(f"{location}/custom_plugins", 1001, 1001)
+
+    if not os.path.isfile(f"{location}/config/mongo_replica.key"):
+        with open(f"{location}/config/mongo_replica.key", "w") as fp:
+            fp.write(b64encode(token_bytes(60)).decode())
+    os.chmod(f"{location}/config/mongo_replica.key", 0o400)
+    os.chown(f"{location}/config/mongo_replica.key", MONGO_USER_ID, MONGO_USER_ID)
+
+
+def update_yaml_file(filename):
+    # Import Yaml module for HA.
+    import yaml
+
+    with open(f"{filename}.yml", 'r') as file:
+        compose_data = yaml.load(file, Loader=yaml.SafeLoader)
+
+    # Add hosts for connectivity
+    hosts_list = AVAILABLE_INPUTS['HA_IP_LIST'].split(",")
+
+    # Update hostname of the RabbitMQ container
+    for index, var in enumerate(compose_data['services']['rabbitmq-stats']['environment']):
+        if 'RABBITMQ_NODENAME' in var:
+            compose_data['services']['rabbitmq-stats']['environment'][index] = var.replace(
+                "rabbit@rabbitmq-stats",
+                f"rabbit@{AVAILABLE_INPUTS['HA_CURRENT_NODE']}"
+            )
+    compose_data['services']['rabbitmq-stats']['environment'].append("RABBITMQ_USE_LONGNAME=true")
+
+    # Add Ports
+    compose_data['services']['rabbitmq-stats']['ports'] = ["4369:4369", "5672:5672", "15672:15672", "25672:25672"]
+    compose_data['services']['mongodb-primary']['ports'] = ["27017:27017"]
+
+    # Update mongo service for authentication using mongo_replica.key
+    compose_data['services']['mongodb-primary']['volumes'].append(f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/mongo_replica.key:/data/mongo_replica.key:z")
+    compose_data['services']['mongodb-primary']['command'] = "mongod --bind_ip_all --replSet mongo_replica_set --keyFile /data/mongo_replica.key"
+
+    # Update connection strings and add required variables
+    host_list = [f'{AVAILABLE_INPUTS["HA_PRIMARY_NODE_IP"]}:27017']
+    for hostname in hosts_list:
+        if hostname == AVAILABLE_INPUTS["HA_PRIMARY_NODE_IP"]:
+            continue
+        host_list.append(f"{hostname}:27017")
+    mongo_host_list = ",".join(host_list)
+    rabbitmq_host_list = ";".join([f"amqp://user:${{MAINTENANCE_PASSWORD_ESCAPED}}@{host}" for host in hosts_list])
+    compose_data['services']['core']['environment'].extend([
+        f'MONGO_CONNECTION_STRING=mongodb://cteadmin:${{MAINTENANCE_PASSWORD_ESCAPED}}@{mongo_host_list}/cte?replicaSet=mongo_replica_set',
+        f'RABBITMQ_CONNECTION_STRING={rabbitmq_host_list}',
+        'HA_IP_LIST=${HA_IP_LIST}',
+        'UI_PROTOCOL=${UI_PROTOCOL}',
+        'UI_PORT=${UI_PORT}',
+    ])
+
+    # Update the certificate paths
+    for index, volume in enumerate(compose_data['services']['ui']['volumes']):
+        compose_data['services']['ui']['volumes'][index] = volume.replace("./data/ssl_certs", f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs")
+    for index, volume in enumerate(compose_data['services']['core']['volumes']):
+        volume = volume.replace("./data/ca_certs", f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ca_certs")
+        volume = volume.replace("./data/custom_plugins", f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/custom_plugins")
+        compose_data['services']['core']['volumes'][index] = volume
+
+    # Add NFS Volumes
+    compose_data['services']['core']['volumes'].extend([
+        "nfs_repos:/opt/netskope/repos",
+        "nfs_plugins:/opt/netskope/plugins"
+    ])
+
+    compose_data['volumes'] = {
+        'nfs_repos': {
+            'driver': 'local',
+            'driver_opts': {
+                'type': "none",
+                'o': "bind",
+                'device': f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/repos",
+            }
+        },
+        'nfs_plugins': {
+            'driver': 'local',
+            'driver_opts': {
+                'type': "none",
+                'o': "bind",
+                'device': f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/plugins",
+            }
+        },
+    }
+
+    with open(f"{filename}-ha.yml", 'w') as file:
+        yaml.dump(compose_data, file, default_flow_style=False,
+                  sort_keys=False, Dumper=yaml.SafeDumper)
+
+
+def ask_for_ha_values(primary=False):
+    # Ask for IP list
+    key = "HA_IP_LIST"
+    if primary:
+        message = '> Enter comma separated IP list to connect the machines for HA.' \
+                  f" (Current: \"{AVAILABLE_INPUTS.get(key, '')}\"): "
+        while True:
+            data = input(message).strip() or AVAILABLE_INPUTS.get(key, "")
+            data = ",".join(list(filter(None, [i.strip() for i in data.split(",")])))
+            if not data:
+                print("Required value is not provided. Please provide a valid value.")
+                continue
+            AVAILABLE_INPUTS[key] = data
+            break
+    else:
+        print(f"The HA is enabled. Current HA IP list: {AVAILABLE_INPUTS.get(key)}")
+
+    # Ask for current node info
+    key = "HA_CURRENT_NODE"
+    message = f"> Enter ip address of current node. (Current: \"{AVAILABLE_INPUTS.get(key, '')}\"): "
+    while True:
+        data = input(message).strip() or AVAILABLE_INPUTS.get(key, "")
+        if not data:
+            print("Required value is not provided. Please provide a valid value.")
+            continue
+        if _validate_current_node(data):
+            AVAILABLE_INPUTS[key] = data
+            if primary:
+                AVAILABLE_INPUTS["HA_PRIMARY_NODE_IP"] = data
+            break
+        print("The provided values does not exist in above list. Please provide a valid value.")
+
+    # Keep the static value for now.
+    AVAILABLE_INPUTS["SYNC_STRATEGY"] = "2"
+
+
+def set_up_ha_values():
+    # Base version for HA support is 5.0.0
+    install_version = AVAILABLE_INPUTS["INSTALL_VERSION"]
+    if list(map(int, install_version.split("."))) < [5, 0, 0]:
+        return
+
+    while True:
+        try:
+            is_ha = strtobool(input("> Do you want to setup HA Parameters? [y/n]: ").strip().lower())
+        except Exception:
+            print("Invalid input. Please provide a valid input.")
+            continue
+        if not is_ha:
+            AVAILABLE_INPUTS.pop("HA_NFS_DATA_DIRECTORY", None)
+            AVAILABLE_INPUTS.pop("HA_IP_LIST", None)
+            AVAILABLE_INPUTS.pop("HA_CURRENT_NODE", None)
+            AVAILABLE_INPUTS.pop("HA_PRIMARY_NODE_IP", None)
+            return
+        break
+
+    while True:
+        location = input(
+            f"> Please provide the location of the NFS mount directory (Current: '{AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY', '')}'): "
+        ).strip().rstrip("/") or AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY', '')
+        if os.path.isdir(location):
+            break
+        print("The provided path doesn't exist. Please provide a valid path.")
+    try:
+        get_all_existed_env_variable(f"{location}/config/.env")  # Get env variables from shared location
+    except Exception:
+        pass  # For fresh setup, shared .env doesn't exist
+    AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY'] = location
+
+    create_required_files(location)
+    ask_for_ha_values(primary=True)
+
+    update_yaml_file("docker-compose")
+    if not ce_as_vm_check():
+        update_yaml_file("podman-compose")
 
 
 def run():
     try:
-        should_ignore = (
-            True
-            if (len(sys.argv) > 1 and sys.argv[1] == "--ignore-failures")
-            else False
+        parser = argparse.ArgumentParser(
+            prog='./setup',
+            description='Setup the environment for the Netskope CE.',
+            epilog='For more info, please read the user guide.'
         )
-        if len(sys.argv) > 1:
-            if len(sys.argv) > 2:
-                print("Invalid number of arguments provided.")
-                exit()
-            if "--ignore-failures" in sys.argv:
-                should_ignore = True
-            invalids = []
-            for x in sys.argv[1:]:
-                if x not in ["--ignore-failures"]:
-                    invalids.append(x)
-            if invalids != []:
-                print(f"Invalid {invalids} flag(s) provided.")
-                exit()
-        print_banner()
-        create_env_if_not_exist()
-        get_all_existed_env_variable()  # Get already exsting env variables
-        pull_from_github()
+        parser.add_argument('-l', '--location', help='Location of the NFS mount directory.', required=False, default="")
+        parser.add_argument("--ignore-failures", nargs='?', const=True, default=False, help='Ignore failures and continue.')
+        args = parser.parse_args()
+        location = args.location.rstrip("/")
+        should_ignore = args.ignore_failures
 
-        ask_for_ce_version()
-        ask_for_initial_inputs()
+        print_banner()
+        if not ce_as_vm_check():
+            pull_from_github()
+
+        fetch_container_info()
+        create_env_if_not_exist()
+        if location:
+            get_all_existed_env_variable()  # Get local env variables
+            get_all_existed_env_variable(f"{location}/config/.env")  # Get env variables from shared location
+
+            AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY'] = location
+            ask_for_ha_values(primary=False)
+
+            update_yaml_file("docker-compose")
+            if not ce_as_vm_check():
+                update_yaml_file("podman-compose")
+        else:
+            get_all_existed_env_variable()  # Get already exsting env variables
+            if not ce_as_vm_check():
+                ask_for_ce_version()
+            else:
+                set_ce_version_for_vm()
+            ask_for_initial_inputs()
+            set_up_ha_values()
+            location = AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY')
+
         check_prerequisites()
         migrate_mongo()
         check_and_apply_file_permissions()
@@ -1514,209 +1926,16 @@ def run():
                 .lower()
             )
 
-        # Ask for Protocol
-        protocol = ""
-        is_ssl_enabled = check_for_certs()
-        if not is_ssl_enabled:
-            while protocol not in ["http", "https"]:
-                protocol = (
-                    input(
-                        "\nDo you want to access CE over HTTP, or HTTPS (HTTPS is recommended)? "
-                    )
-                    .strip()
-                    .lower()
-                )
-                if protocol == "http":
-                    print("Accessing CE over HTTP is not recommended\n")
-                    confim = (
-                        input(
-                            "Do you still want to access CE over HTTP? (y/yes) "
-                        )
-                        .strip()
-                        .lower()
-                    )
-                    if confim not in ["y", "yes"]:
-                        protocol = ""
-                        continue
-                    else:
-                        DEFAULT_INPUTS["ENABLE_TLS_V_1_2"][
-                            "default"
-                        ] = "TLSv1.3"
-                        DEFAULT_INPUTS["ENABLE_TLS_V_1_2"]["skip"] = True
-                elif protocol == "https":
-                    DEFAULT_INPUTS["UI_PORT"]["default"] = 443
-                    is_ssl_enabled = (
-                        check_for_certs()
-                    )  # Checking if SSL is enabled or not
-                    if not is_ssl_enabled:
-                        create_self_signed_ssl_certs()
-                    print(
-                        "\033[1;37mReplace ./data/ssl_certs/cte_cert.crt and ./data/ssl_certs/cte_cert_key.key files with your custom certificate and key files respectively to use custom SSL certificates.\033[0;37m"
-                    )
-                else:
-                    print(
-                        "Invalid input... Valid inputs are 'http' or 'https'.\n"
-                    )
-        else:
-            DEFAULT_INPUTS["UI_PORT"]["default"] = 443
-
-        print()
-
-        # Ask for all configuration parameters
-        for key, item in DEFAULT_INPUTS.items():
-            data = ""
-            if not item["skip"]:
-                if key not in AVAILABLE_INPUTS:
-                    if item["help"]:
-                        print(item["help"])
-                    if item.get("mandatory", False):
-                        user_input = item.get("user_input")
-                        if key == "JWT_SECRET":
-                            data = ""
-                            while data == "":
-                                data = getpass(f"> {user_input}: ").strip()
-                                if data == "":
-                                    print(
-                                        "JWT Secret can not be empty. Please try again.\n"
-                                    )
-                        elif key == "MAINTENANCE_PASSWORD":
-                            data = "a"
-                            confirm_data = "b"
-                            while data != confirm_data or len(data) == 0:
-                                data = "a"
-                                confirm_data = "b"
-                                data = getpass(f"> {user_input}: ").strip()
-                                if data == "":
-                                    print(
-                                        "Maintenance password can not be empty. Please try again.\n"
-                                    )
-                                    continue
-
-                                if (
-                                    ("\\" in data)
-                                    or ("/" in data)
-                                    or ("'" in data)
-                                    or ('"' in data)
-                                    or (" " in data)
-                                ):
-                                    print(
-                                        "Maintenance password can not contain \\ / space ' \" Please try again.\n"
-                                    )
-                                    continue
-
-                                confirm_data = getpass(
-                                    f"\n> Confirm maintenance password: "
-                                ).strip()
-                                if data != confirm_data:
-                                    print(
-                                        "Maintenance password and Confirm maintenance password do not match. Please try again.\n"
-                                    )
-                            data = f"'{data}'"
-                        else:
-                            data = input(f"> {user_input}: ").strip()
-                    else:
-                        user_input = item.get("user_input")
-                        if user_input:
-                            if key == "UI_PORT":
-                                i = 0
-                                while True:
-                                    if i >= 3:
-                                        print(
-                                            "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
-                                        exit(1)
-                                    data = input(
-                                        f"> {user_input} (Default: \"{item['default']}\"): "
-                                    ).strip()
-                                    if validate_port(data):
-                                        data = item['default'] if data == "" else data
-                                        if check_port(int(data)):
-                                            print(
-                                                '\033[1;37mNOTE: This port will be used to access the Netskope CE UI. Please make sure that inbound traffic to this port is allowed.\n\033[0;37m'
-                                            )
-                                            break
-                                    else:
-                                        print(
-                                            "Invalid port provided... Port should be within 1 to 65535 range...\n")
-                                    i += 1
-                            else:
-                                data = input(
-                                    f"> {user_input} (Default: \"{item['default']}\"): "
-                                ).strip()
-                        else:
-                            data = input(
-                                f"> Enter {key} (Default: \"{item['default']}\"): "
-                            ).strip()
-
-                else:
-                    if key != "MAINTENANCE_PASSWORD":
-                        if item["help"]:
-                            print(item["help"])
-                        user_input = item.get("user_input", None)
-                        if user_input:
-                            if key == "JWT_SECRET":
-                                data = ""
-                                while data == "":
-                                    data = getpass(f"> {user_input}: ").strip()
-                                    if data == "":
-                                        print(
-                                            "JWT Secret should not be empty. Please try again.\n"
-                                        )
-                            elif key == "UI_PORT":
-                                i = 0
-                                while True:
-                                    if i >= 3:
-                                        print(
-                                            "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m")
-                                        exit(1)
-                                    data = input(
-                                        f"> {user_input} (Current: \"{AVAILABLE_INPUTS[key]}\"): "
-                                    ).strip()
-                                    if validate_port(data):
-                                        data = AVAILABLE_INPUTS[key] if data == "" else data
-                                        if check_port(int(data)):
-                                            print(
-                                                '\033[1;37mNOTE: This port will be used to access the Netskope CE UI. Please make sure that inbound traffic to this port is allowed.\n\033[0;37m'
-                                            )
-                                            break
-                                    else:
-                                        print(
-                                            "Invalid port provided... Port should be within 1 to 65535 range...\n")
-                                    i += 1
-                            else:
-                                data = input(
-                                    f'> {user_input} (Current: "{AVAILABLE_INPUTS[key]}"): '
-                                ).strip()
-                        else:
-                            data = input(
-                                f'> Enter {key} (Current: "{AVAILABLE_INPUTS[key]}"): '
-                            ).strip()
-                print("")
-            data = data.strip() if isinstance(data, str) else data
-            if not data:
-                if key not in AVAILABLE_INPUTS:
-                    data = item["default"]
-                else:
-                    data = AVAILABLE_INPUTS[key]
-            data = data.strip() if isinstance(data, str) else data
-            if key == "MAINTENANCE_PASSWORD_ESCAPED":
-                data = urllib.parse.quote_plus(
-                    AVAILABLE_INPUTS["MAINTENANCE_PASSWORD"].strip("'")
-                )
-
-            if key == "ENABLE_TLS_V_1_2":
-                if data.lower() in ["y", "yes"]:
-                    data = "TLSv1.2 TLSv1.3"
-                else:
-                    data = "TLSv1.3"
-            AVAILABLE_INPUTS[key] = data
-
-            if key == "PULL_THREADS":
-                AVAILABLE_INPUTS[key] = item.get("default", 4)
+        if not args.location.rstrip("/"):
+            ask_for_config_params()
 
         code_tag_version = AVAILABLE_INPUTS.get("CORE_TAG", "").strip()
         if "3-latest" not in code_tag_version:
             # len == 1 as .gitkeep file will always be there in the ca_certs folder
-            if (len(os.listdir('data/ca_certs')) == 1):
+            custom_cert_path = "./data/ca_certs"
+            if location:
+                custom_cert_path = f"{location}/config/ca_certs"
+            if len(os.listdir(custom_cert_path)) == 1:
                 # Ask for custom ca certs
                 custom_ssl_confirm = (
                     input(
@@ -1727,20 +1946,25 @@ def run():
                 )
                 if custom_ssl_confirm in ["y", "yes"]:
                     print(
-                        "\n\033[1;37mPlease add your certs to ./data/ca_certs and Re-run the script.\033[0;37m")
+                        f"\n\033[1;37mPlease add your certs to {custom_cert_path} and Re-run the script.\033[0;37m")
             else:
-                print("CA certificate successfully found in the /data/ca_certs folder.")
-        check_for_extra_small_stack_confs()
+                print(f"CA certificate successfully found in the {custom_cert_path} folder.")
+        assign_memory_to_rabbitmq_container()
         put_env_variable(AVAILABLE_INPUTS)
         take_env_backup()
 
+        message = "\nSetup completed successfully...\n\nExecute this command to start the CE:\n  >"
+        if location:
+            put_env_variable(AVAILABLE_INPUTS, f"{location}/config/.env")
+            message = "\nSetup completed successfully...\n\nExecute this command in primary node to start the CE:\n  >"
+
         if isRedHat():
             print(
-                "\nSetup completed successfully...\n\nExecute this command to start CE:\n  > sudo ./start"
+                f"{message} sudo ./start"
             )
         else:
             print(
-                "\nSetup completed successfully...\n\nExecute this command to start CE:\n  > ./start"
+                f"{message} ./start"
             )
         print(
             "\nPlease re-run the setup script to update any parameter.\n"
@@ -1748,6 +1972,8 @@ def run():
 
     except KeyboardInterrupt:
         put_env_variable(AVAILABLE_INPUTS)
+        if location:
+            put_env_variable(AVAILABLE_INPUTS, f"{location}/config/.env")
         print(
             "\nSetup stopped... The entered configurations will be saved...\n"
         )
