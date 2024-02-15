@@ -68,10 +68,10 @@ else
 fi
 
 if [ -n "${HA_IP_LIST}" ]; then
+    sleep 30
     if [ "$HA_PRIMARY_NODE_IP" = "$HA_CURRENT_NODE" ]; then
         ./replica_set --initiate
     else
-        sleep 5
         ./replica_set --join
         sleep 5
         compose_command exec -- rabbitmq-stats rabbitmqctl stop_app
