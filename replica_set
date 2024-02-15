@@ -8,10 +8,12 @@ from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
 
 load_dotenv()
+path = os.environ.get("LOCATION")
+load_dotenv(path)
 
-MAINTENANCE_PASSWORD_ESCAPED = os.environ["MAINTENANCE_PASSWORD_ESCAPED"]
+MAINTENANCE_PASSWORD_ESCAPED = os.getenv("MAINTENANCE_PASSWORD_ESCAPED")
 HA_CURRENT_NODE = os.environ["HA_CURRENT_NODE"]
-
+REPLICA_SET_INITIALIZE_RETRY_COUNT = 3
 
 def strtobool(val):
     val = val.lower()
@@ -49,11 +51,20 @@ def create_replica_set(connection_string):
         }
 
         print("Initializing MongoDB replica set...")
-        _ = client.admin.command("replSetInitiate", config)
+        retry_count = 0
+        while retry_count < REPLICA_SET_INITIALIZE_RETRY_COUNT:
+            retry_count += 1
+            try:
+                _ = client.admin.command("replSetInitiate", config)
+                break
+            except ServerSelectionTimeoutError as ex:
+                if retry_count == REPLICA_SET_INITIALIZE_RETRY_COUNT:
+                    raise ex
+                time.sleep(30)
         print("Replica set initialized.")
 
-        retry = 3
-        wait_time = 0
+        retry = 30
+        wait_time = 30
         while True:
             print("Waiting for migrations to be completed...")
             time.sleep(5)
@@ -65,7 +76,6 @@ def create_replica_set(connection_string):
                 print("Unable to find settings collection in the database. Retrying...")
                 retry -= 1
                 time.sleep(wait_time)
-                wait_time += 5
                 continue
             db_version = dict(response).get("databaseVersion", "")
             if db_version == os.environ["INSTALL_VERSION"]:
@@ -195,6 +205,6 @@ if __name__ == "__main__":
         else:
             print("Please provide at least one option to run this script.")
     except Exception as ex:
-        # print(str(ex))
+        print(str(ex))
         exit(1)
     exit(0)
