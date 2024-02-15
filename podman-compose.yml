@@ -1,12 +1,14 @@
 version: "3.3"
 services:
   rabbitmq-stats:
-    image: index.docker.io/rabbitmq:3.12.6-management
+    image: index.docker.io/rabbitmq:3.12.10-management
     user: "1001:1001"
+    env_file:
+      - ./.env
+      - ${LOCATION}
     environment:
       - RABBITMQ_NODENAME=rabbit@rabbitmq-stats
       - RABBITMQ_DEFAULT_USER=user
-      - RABBITMQ_DEFAULT_PASS=${MAINTENANCE_PASSWORD}
       - RABBITMQ_DISK_FREE_LIMIT_ABSOLUTE=1
       - RABBITMQ_RAM_RESOURCES=${RABBITMQ_RAM_RESOURCES:-3072}
     restart: always
@@ -21,20 +23,21 @@ services:
       resources:
         limits:
           memory: ${RABBITMQ_RAM_RESOURCES:-3072}M
-    entrypoint: ["/bin/bash","-c","echo ${MAINTENANCE_PASSWORD_ESCAPED} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"]
+    entrypoint: ["/bin/bash","-c","echo ${RABBITMQ_COOKIE} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"]
   mongodb-primary:
-    image: index.docker.io/mongo:5.0.21
+    image: index.docker.io/mongo:6.0.12
     user: mongodb
+    env_file:
+      - ./.env
+      - ${LOCATION}
     volumes:
       - ./data/mongo-data/data/db:/data/db:z
       - ./data/database-init/mongo-init.sh:/docker-entrypoint-initdb.d/mongo-init.sh:z
     environment:
       - MONGODB_ADVERTISED_HOSTNAME=mongodb-primary
       - MONGO_INITDB_ROOT_USERNAME=root
-      - MONGO_INITDB_ROOT_PASSWORD=${MAINTENANCE_PASSWORD}
       - MONGO_INITDB_DATABASE=cte
       - MONGODB_USERNAME=cteadmin
-      - MONGODB_PASSWORD=${MAINTENANCE_PASSWORD}
       - HTTP_PROXY=${CORE_HTTP_PROXY}
       - HTTPS_PROXY=${CORE_HTTPS_PROXY}
     restart: always
@@ -42,15 +45,22 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: ${MONGODB_RAM_RESOURCES:-3072}M
   core:
     image: index.docker.io/${CORE_TAG}
+    env_file:
+      - ./.env
+      - ${LOCATION}
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - ./data/ca_certs:/usr/local/share/ca-certificates:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq:z
+      - nfs_repos:/opt/netskope/repos
+      - nfs_plugins:/opt/netskope/plugins
     environment:
-      - MONGO_CONNECTION_STRING=mongodb://cteadmin:${MAINTENANCE_PASSWORD_ESCAPED}@mongodb-primary:27017/cte
-      - RABBITMQ_CONNECTION_STRING=amqp://user:${MAINTENANCE_PASSWORD_ESCAPED}@rabbitmq-stats
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ENABLE_CELERY_BEAT=true
@@ -81,6 +91,10 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: ${CORE_RAM_RESOURCES:-3072}M
     depends_on:
       - mongodb-primary
       - rabbitmq-stats
@@ -105,3 +119,20 @@ services:
       options:
         max-size: "10m"
         max-file: "5"
+    deploy:
+      resources:
+        limits:
+          memory: ${UI_RAM_RESOURCES:-256}M
+volumes:
+  nfs_repos:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/repos
+  nfs_plugins:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: ./data/plugins

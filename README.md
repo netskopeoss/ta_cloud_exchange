@@ -8,14 +8,10 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 - Linux System capable of supporting docker.io release of docker, and docker-compose
 - Python 3.8.x
 - Zip (For the diagnose script)
-- Minimum Requirements (CE v4.1.0 and v4.2.0):
-  - 4 vCPU (only x86 architecture with AVX is supported)
-  - 4 GB of Memory
-  - 40 GB of storage
-- Minimum Requirements (CE v5.0.0 or Later):
-  - 6 vCPU (only x86 architecture with AVX is supported)
-  - 8 GB of Memory
-  - 40 GB of storage
+- Minimum Requirements:
+  - 8 vCPU (only x86 architecture with AVX is supported)
+  - 16 GB of Memory
+  - 80 GB of storage
 - Please see the full [documentation](https://docs.netskope.com/en/netskope-help/integrations-439794/netskope-cloud-exchange/about-cloud-exchange/cloud-exchange-system-requirements) for scale numbers.
 - Use latest docker version (https://docs.docker.com/engine/install/centos/)
 - Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
@@ -29,11 +25,16 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
     Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
 2.  Execute the setup script:<br>
     a. `sudo ./setup`<br>
-3.  Launch Cloud Exchange 3<br>
+3.  Launch Cloud Exchange<br>
     a. `sudo ./start`<br>
 4.  Open Browser to `http(s)://<host ip address>`<br>
 
 Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory. The name of the certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
+
+## Install Procedure for CE as a VM deployment
+
+1. Download the latest version of OVA from this [link](https://cloud-exchange-store-beta.s3.amazonaws.com/cloudexchange/ova/cloud-exchange-5.0.1-beta-20240208.ova).
+2. Please use this [documentation](https://drive.google.com/drive/folders/1-c94TSSFW5o5_8N1bBqiQ3bP1JGI8ORL) to install the cloud exchange.
 
 ## Troubleshooting
 
