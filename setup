@@ -82,6 +82,7 @@ DEFAULT_INPUTS = {
     "REQUESTS_TIMEOUT": {"default": 300, "skip": True, "help": ""},
     "POPEN_TIMEOUT": {"default": 1800, "skip": True, "help": ""},
     "IS_MPASS_CONFIGURED": {"default": True, "skip": True, "help": ""},
+    "MONGO_COMPATIBILITY": {"default": False, "skip": True, "help": ""},
     "RABBITMQ_COOKIE": {"default": "", "skip": True, "help": ""},
     "LOCATION": {"default": "", "skip": True, "help": ""},
     "COMPOSE_HTTP_TIMEOUT": {"default": 600, "skip": True, "help": ""},
@@ -99,7 +100,7 @@ MIN_PODMAN_VERSION = "3.4.2"
 MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 
 N = 5
-CURRENT_VERSION = "5.0.0"
+CURRENT_VERSION = "5.0.1"
 PREVIOUS_VERSION = "4.2.0"
 CURRENT_BETA_VERSION = "5.0.1"
 CE_VERSION_1 = f"CE v{N}-{CURRENT_VERSION}"
@@ -115,17 +116,27 @@ CORE_VERSION_2_TAG = (
 UI_VERSION_2_TAG = (
     f"netskopetechnicalalliances/cloudexchange:ui{N-1}-{PREVIOUS_VERSION}"
 )
-CORE_VERSION_BETA_TAG = f"netskopetechnicalalliances/cloudexchange:core-{CURRENT_BETA_VERSION}-beta"
-UI_VERSION_BETA_TAG = f"netskopetechnicalalliances/cloudexchange:ui-{CURRENT_BETA_VERSION}-beta"
+CORE_VERSION_BETA_TAG = (
+    f"netskopetechnicalalliances/cloudexchange:core-{CURRENT_BETA_VERSION}-beta"
+)
+UI_VERSION_BETA_TAG = (
+    f"netskopetechnicalalliances/cloudexchange:ui-{CURRENT_BETA_VERSION}-beta"
+)
 
 CORE_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
 UI_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
 CORE_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-latest"
 UI_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-latest"
 
+RECOMMENDED_DOCKER_VERSION = "25.0.3"
+RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.24.6"
+RECOMMENDED_PODMAN_VERSION = "4.6.1"
+RECOMMENDED_PODMAN_COMPOSE_VERSION = "1.0.6"
+
 GIT_PLUGIN_REPO = "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
 
 MONGO_USER_ID = 999
+MONGO_MIGRATION_TIMEOUT = 60
 
 is_ui_running = False
 is_rabbitmq_running = False
@@ -207,14 +218,7 @@ def ce_as_vm_check():
 def fetch_container_info():
     global is_ui_running, is_rabbitmq_running, is_mongodb_running
     try:
-        p = subprocess.Popen(
-            ["docker", "ps", "--format", "json"],
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stdin=subprocess.PIPE,
-        )
-        out, err = p.communicate()
-        if err:
+        if isRedHat():
             p = subprocess.Popen(
                 ["podman", "ps", "--format", "json"],
                 stderr=subprocess.PIPE,
@@ -224,11 +228,17 @@ def fetch_container_info():
             out, err = p.communicate()
             containers = json.loads(out.decode("utf-8"))
             if err:
-                print_warning(
-                    f"Unable to fetch container information. {err.decode('utf-8')}\n"
-                )
-                return
+                raise Exception("Unable to fetch container information.")
         else:
+            p = subprocess.Popen(
+                ["docker", "ps", "--format", "json"],
+                stderr=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stdin=subprocess.PIPE,
+            )
+            out, err = p.communicate()
+            if err:
+                raise Exception("Unable to fetch container information.")
             containers = [json.loads(line) for line in out.decode("utf-8").splitlines()]
 
         for container_info in containers:
@@ -356,11 +366,61 @@ def create_env_if_not_exist(location=".env"):
         raise Exception(f"Error occurred while creating file: {e}")
 
 
-def get_all_existed_env_variable(location=".env"):
-    AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = ""
-    AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = ""
-    AVAILABLE_INPUTS["DESTINATION_PATH"] = ""
+def execute_shell_command(command):
+    """Function to exectute shell command using python script."""
+    p = None
+    try:
+        p = subprocess.check_output(command, shell=True)
+    except Exception as e:
+        if p:
+            p.kill()
+        raise Exception(f"Error occurred while executing command. Error: {e}")
 
+
+def run_temp_mongo_container_for_migration(
+    maintenance_password, http_proxy, https_proxy
+):
+    """Migrate mongo data by running temp mongo container and update featurecompatibilityversion variable from mongo."""
+    deployment = None
+    MONGO_MIGRATE_IMAGE = "mongo:5.0.21"
+    temp_mongo_container_name = "mongo-migration"
+
+    if isRedHat():
+        deployment = "podman"
+    else:
+        deployment = "docker"
+
+    # If from previous temp container is still running then kill that container and start again.
+    remove_container = f"{deployment} rm -f {temp_mongo_container_name} >/dev/null 2>&1"
+    execute_shell_command(remove_container)
+    time.sleep(5)
+
+    create_container = f"{deployment} run -d -t -e MONGODB_ADVERTISED_HOSTNAME=mongodb-primary \
+                        -e MONGO_INITDB_ROOT_USERNAME=root \
+                        -e MONGO_INITDB_ROOT_PASSWORD={maintenance_password} \
+                        -e MONGO_INITDB_DATABASE=cte \
+                        -e MONGODB_USERNAME=cteadmin \
+                        -e MONGODB_PASSWORD={maintenance_password} \
+                        -e HTTP_PROXY=${http_proxy} \
+                        -e HTTPS_PROXY=${https_proxy} \
+                        -v ./data/mongo-data/data/db:/data/db:z \
+                        --name {temp_mongo_container_name} \
+                        index.docker.io/{MONGO_MIGRATE_IMAGE} >/dev/null 2>&1"
+    execute_shell_command(create_container)
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+
+    eval_command = """'db.adminCommand({setFeatureCompatibilityVersion: "5.0"})'"""
+    compatibility_command = f"{deployment} exec {temp_mongo_container_name} mongo -u root --password {maintenance_password} admin --eval {eval_command}"
+    execute_shell_command(compatibility_command)
+
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    remove_container = f"{deployment} rm -f {temp_mongo_container_name} >/dev/null 2>&1"
+    execute_shell_command(remove_container)
+
+    print_pass("The migration of database has been successfully completed.")
+
+
+def get_all_existed_env_variable(location=".env", override=True):
     try:
         with open(location, "r") as f:
             if os.stat(location).st_size > 0:
@@ -368,7 +428,8 @@ def get_all_existed_env_variable(location=".env"):
                     for line in f.readlines():
                         backup.write(line)
                         key, value = line.split("=", 1)
-                        AVAILABLE_INPUTS[key] = value.strip()
+                        if override or key not in AVAILABLE_INPUTS:
+                            AVAILABLE_INPUTS[key] = value.strip()
 
         if AVAILABLE_INPUTS.get("HTTPS_PROXY"):
             AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = AVAILABLE_INPUTS["HTTPS_PROXY"]
@@ -514,7 +575,7 @@ def check_machine_specs():
     if is_ha:
         try:
             port_flag = True
-            for port in [4369, 5672, 15672, 25672]:
+            for port in [4369, 5672, 15672, 25672, 35672]:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 result = sock.connect_ex(("127.0.0.1", port))
                 if result == 0:
@@ -569,6 +630,8 @@ def check_docker_versions():
                 f"Docker Version {docker_version} (Minimum {MIN_DOCKER_VERSION} is required)"
             )
             CHECKS["Docker"] = Status.FAIL
+        if docker_version != RECOMMENDED_DOCKER_VERSION:
+            print_warning(f"The recommended docker version is {RECOMMENDED_DOCKER_VERSION}")
 
         command = "docker-compose --version"
         p = subprocess.check_output(command, shell=True)
@@ -581,6 +644,9 @@ def check_docker_versions():
                 f"Docker Compose Version {docker_compose_version} (Minimum {MIN_DOCKER_COMPOSE_VERSION} is required)"
             )
             CHECKS["Docker-Compose"] = Status.FAIL
+        if docker_compose_version != RECOMMENDED_DOCKER_COMPOSE_VERSION:
+            print_warning(f"The recommended docker-compose version is {RECOMMENDED_DOCKER_COMPOSE_VERSION}")
+
     except Exception as e:
         CHECKS["Docker-Compose"] = Status.NOT_VERIFIED
         CHECKS["Docker"] = Status.NOT_VERIFIED
@@ -610,6 +676,8 @@ def check_podman_versions():
                 f"Podman Version {podman_version} (Minimum {MIN_PODMAN_VERSION} is required)"
             )
             CHECKS["Podman"] = Status.FAIL
+        if podman_version != RECOMMENDED_PODMAN_VERSION:
+            print_warning(f"The recommended podman version is {RECOMMENDED_PODMAN_VERSION}")
 
         podman_compose_version = ""
         for line in lines:
@@ -627,6 +695,8 @@ def check_podman_versions():
                 f"Podman Compose Version {podman_compose_version} (Minimum {MIN_PODMAN_COMPOSE_VERSION} is required)"
             )
             CHECKS["Podman-Compose"] = Status.FAIL
+        if podman_compose_version != RECOMMENDED_PODMAN_COMPOSE_VERSION:
+            print_warning(f"The recommended podman-compose version is {RECOMMENDED_PODMAN_COMPOSE_VERSION}")
 
         command = "rpm -qa"
         p = subprocess.check_output(command, shell=True)
@@ -777,7 +847,7 @@ def ask_for_initial_inputs():
 
     if isProxy == "y" or isProxy == "yes":
         # HTTPS_PROXY
-        cur_https_proxy = parse_proxy(AVAILABLE_INPUTS["CORE_HTTPS_PROXY"])
+        cur_https_proxy = parse_proxy(AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", None))
 
         print(
             f"\nEnter Proxy URL (e.g. http(s)://10.0.0.0:3128)  {('(Current: ' + cur_https_proxy + ')') if cur_https_proxy is not None else ''}"
@@ -1386,7 +1456,7 @@ def migrate_mongo():
 
 def copy_env(inputs):
     while True:
-        if AVAILABLE_INPUTS["DESTINATION_PATH"] == "":
+        if AVAILABLE_INPUTS.get("DESTINATION_PATH", "") == "":
             destination = input(
                 "> Enter the destination path (e.g. './backup_env'): "
             ).strip()
@@ -1395,7 +1465,9 @@ def copy_env(inputs):
                 f"\n> Enter the destination path for backup of .env (Current: \"{AVAILABLE_INPUTS['DESTINATION_PATH']}\"): "
             ).strip()
         destination = (
-            AVAILABLE_INPUTS["DESTINATION_PATH"] if destination == "" else destination
+            AVAILABLE_INPUTS.get("DESTINATION_PATH", "")
+            if destination == ""
+            else destination
         )
         if destination.strip() == get_secret_location(inputs).strip():
             print_warning(
@@ -1418,7 +1490,7 @@ def copy_env(inputs):
                 print("backup completed...")
                 break
             else:
-                AVAILABLE_INPUTS["DESTINATION_PATH"] == ""
+                AVAILABLE_INPUTS.get("DESTINATION_PATH", "") == ""
                 raise Exception(err.decode("utf-8"))
         except Exception as e:
             if p:
@@ -1428,7 +1500,7 @@ def copy_env(inputs):
 
 
 def take_env_backup(inputs):
-    if AVAILABLE_INPUTS["DESTINATION_PATH"] == "":
+    if AVAILABLE_INPUTS.get("DESTINATION_PATH", "") == "":
         isBackup = (
             input("\n\n> Do you want to take backup of .env file? [y/n]: ")
             .strip()
@@ -1462,11 +1534,11 @@ def assign_memory_to_rabbitmq_container():
         mem_bytes = get_total_physical_memory()
         if not mem_bytes:
             return
-        mem_mib = mem_bytes/(1024**2)
+        mem_mib = mem_bytes / (1024**2)
 
-        AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = round(mem_mib * (6/32))
-        AVAILABLE_INPUTS["MONGODB_RAM_RESOURCES"] = round(mem_mib * (4/32))
-        AVAILABLE_INPUTS["CORE_RAM_RESOURCES"] = round(mem_mib * (18/32))
+        AVAILABLE_INPUTS["RABBITMQ_RAM_RESOURCES"] = round(mem_mib * (6 / 32))
+        AVAILABLE_INPUTS["MONGODB_RAM_RESOURCES"] = round(mem_mib * (4 / 32))
+        AVAILABLE_INPUTS["CORE_RAM_RESOURCES"] = round(mem_mib * (18 / 32))
         AVAILABLE_INPUTS["UI_RAM_RESOURCES"] = 256
     except Exception:
         pass
@@ -1795,12 +1867,17 @@ def update_yaml_file(filename):
         "RABBITMQ_USE_LONGNAME=true"
     )
 
+    for service in compose_data["services"]:
+        compose_data["services"][service]["env_file"] = [
+            f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/.env", "${LOCATION}"]
+
     # Add Ports
     compose_data["services"]["rabbitmq-stats"]["ports"] = [
         "4369:4369",
         "5672:5672",
         "15672:15672",
         "25672:25672",
+        "35672:35672"
     ]
     compose_data["services"]["mongodb-primary"]["ports"] = ["27017:27017"]
 
@@ -1904,7 +1981,44 @@ def ask_for_ha_values(primary=False):
         )
 
     # Keep the static value for now.
-    AVAILABLE_INPUTS["SYNC_STRATEGY"] = "2"
+    AVAILABLE_INPUTS["SYNC_STRATEGY"] = "1"
+
+
+def generate_dependency_message(version_dict):
+    required_versions = []
+    for dep, versions in version_dict.items():
+        version_string = []
+        if "min_version" in versions:
+            version_string.append(f">={versions['min_version']}")
+        if "max_version" in versions:
+            version_string.append(f"<={versions['max_version']}")
+        required_versions.append(dep + ", ".join(version_string))
+    return " | ".join(required_versions)
+
+
+def check_python_prerequisites():
+    print("\nVerifying the Python prerequisites...")
+    try:
+        version_dict = {
+            "pyyaml": {"min_version": "6.0.0"},
+            "python-dotenv": {"min_version": "0.20.0", "max_version": "1.0.0"},
+            "pymongo": {"min_version": "4.1.1", "max_version": "4.3.3"},
+        }
+        import pkg_resources
+
+        for package, version in version_dict.items():
+            module_version = pkg_resources.get_distribution(package).version
+            if "min_version" in version:
+                if not compare_versions(module_version, version["min_version"]):
+                    raise Exception(f"Invalid version of the '{package}' package")
+            if "max_version" in version:
+                if not compare_versions(version["max_version"], module_version):
+                    raise Exception(f"Invalid version of the '{package}' package")
+    except Exception as err:
+        print_fail(f"{err}. Please make sure the dependencies ({generate_dependency_message(version_dict)}) "
+                   "are satisfied before running ./setup script.")
+        exit(1)
+    print_pass("Python prerequisites verified successfully.")
 
 
 def set_up_ha_values():
@@ -1927,19 +2041,49 @@ def set_up_ha_values():
             AVAILABLE_INPUTS.pop("HA_IP_LIST", None)
             AVAILABLE_INPUTS.pop("HA_CURRENT_NODE", None)
             AVAILABLE_INPUTS.pop("HA_PRIMARY_NODE_IP", None)
+            # previously we have HA and now we want to setup on-prem/OVA.
+            if (
+                "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS.keys()
+                and AVAILABLE_INPUTS.get("LOCATION", None)
+                and AVAILABLE_INPUTS.get("LOCATION", None)
+                not in [".env.keys", "/etc/.env.keys"]
+            ):
+                dest_location = None
+                env_file_location = None
+                if ce_as_vm_check():
+                    dest_location = "/etc/"
+                    env_file_location = "/etc/.env.keys"
+                else:
+                    dest_location = "."
+                    env_file_location = ".env.keys"
+                command = (
+                    f"sudo mv {AVAILABLE_INPUTS.get('LOCATION', None)} {dest_location}"
+                )
+                execute_shell_command(command)
+                AVAILABLE_INPUTS["LOCATION"] = env_file_location
             return
         break
+
+    check_python_prerequisites()
 
     while True:
         location = input(
             f"> Please provide the location of the NFS mount directory (Current: '{AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY', '')}'): "
         ).strip().rstrip("/") or AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY", "")
         if os.path.isdir(location):
+            # previously we have on-prem / OVA and now we want to setup HA.
+            if is_ha and AVAILABLE_INPUTS.get("LOCATION", None) in [
+                ".env.keys",
+                "/etc/.env.keys",
+            ]:
+                command = f"sudo mv {AVAILABLE_INPUTS.get('LOCATION')} {location}/"
+                execute_shell_command(command)
+                AVAILABLE_INPUTS["LOCATION"] = f"{location}/.env.keys"
             break
         print("The provided path doesn't exist. Please provide a valid path.")
     try:
         get_all_existed_env_variable(
-            f"{location}/config/.env"
+            f"{location}/config/.env", override=False
         )  # Get env variables from shared location
     except Exception:
         pass  # For fresh setup, shared .env doesn't exist
@@ -1952,28 +2096,69 @@ def set_up_ha_values():
     if not ce_as_vm_check():
         update_yaml_file("podman-compose")
 
+
 def parse_selinux_status(output):
     selinux_info = {}
-    
     lines = output.splitlines()
     for line in lines:
-        key, value = map(str.strip, line.split(':'))
+        key, value = map(str.strip, line.split(":"))
         selinux_info[key] = value
-    
     return selinux_info
+
+
+def mongo_feature_compatibility(maintenance_password):
+    """
+    Make mongo data compatibility when migrating from older to newer version.
+    """
+    is_mongo_compatible = (
+        True
+        if get_existing_variable_value(".env", "MONGO_COMPATIBILITY") == "True"
+        else False
+    )
+    mongo_data_path = "data/mongo-data/data/db/"
+    if not is_mongo_compatible and len(os.listdir(mongo_data_path)) > 1:
+        print()
+        print_warning(
+            "The migration process for database is currently underway. Kindly wait for a few minutes."
+        )
+        run_temp_mongo_container_for_migration(
+            maintenance_password,
+            AVAILABLE_INPUTS.get("CORE_HTTP_PROXY", ""),
+            AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", ""),
+        )
+    AVAILABLE_INPUTS["MONGO_COMPATIBILITY"] = True
+
 
 def is_selinux_enabled():
     try:
-        process = subprocess.Popen(['sestatus'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        process = subprocess.Popen(
+            ["sestatus"], stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        )
         stdout, _ = process.communicate()
         if process.returncode == 0:
             status_output = stdout.decode("utf-8").strip()
             selinux_info = parse_selinux_status(status_output)
-            return selinux_info.get("SELinux status", "").strip().lower() == "enabled" 
+            return selinux_info.get("SELinux status", "").strip().lower() == "enabled"
         else:
             return False
     except Exception:
         return False
+
+
+def get_existing_variable_value(filepath, key_name):
+    """Retrieve the value of an environment variable from a specific file path."""
+    try:
+        with open(filepath, "r") as f:
+            if os.stat(filepath).st_size > 0:
+                for line in f.readlines():
+                    key, value = line.split("=", 1)
+                    if key == key_name:
+                        return value.strip()
+    except Exception as e:
+        raise Exception(
+            f"Error occured while getting maintenance password. Error: {e}."
+        )
+
 
 def run():
     try:
@@ -2005,13 +2190,18 @@ def run():
             pull_from_github()
         if is_selinux_enabled():
             if not should_ignore:
-                print_fail("SE Linux is enabled. Please DISABLE SE Linux for successful deployment of Netskope Cloud Exchange.")
+                print_fail(
+                    "SE Linux is enabled. Please DISABLE SE Linux for successful deployment of Netskope Cloud Exchange."
+                )
                 exit(1)
             else:
-                print_warning("Ignoring the SE linux... '--ignore-failures' flag applied.")
+                print_warning(
+                    "Ignoring the SE linux... '--ignore-failures' flag applied."
+                )
         fetch_container_info()
         create_env_if_not_exist()
         if location:
+            check_python_prerequisites()
             get_all_existed_env_variable()  # Get local env variables
             get_all_existed_env_variable(
                 f"{location}/config/.env"
@@ -2090,9 +2280,19 @@ def run():
                     f"CA certificate successfully found in the {custom_cert_path} folder."
                 )
         assign_memory_to_rabbitmq_container()
+        mpass = None
+        if AVAILABLE_INPUTS.get("MAINTENANCE_PASSWORD", ""):
+            mpass = AVAILABLE_INPUTS.get("MAINTENANCE_PASSWORD", "")
+        elif AVAILABLE_INPUTS.get("LOCATION", "") and os.path.exists(
+            AVAILABLE_INPUTS["LOCATION"]
+        ):
+            mpass = get_existing_variable_value(
+                AVAILABLE_INPUTS["LOCATION"], "MAINTENANCE_PASSWORD"
+            )
+        mongo_feature_compatibility(mpass)
+
         put_env_variable(AVAILABLE_INPUTS)
         take_env_backup(AVAILABLE_INPUTS)
-
         message = "\nSetup completed successfully...\n\nExecute this command to start the CE:\n  >"
         if location:
             put_env_variable(AVAILABLE_INPUTS, f"{location}/config/.env")
