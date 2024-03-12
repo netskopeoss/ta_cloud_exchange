@@ -7,6 +7,7 @@ green='\033[0;32m'
 yellow='\033[0;33m'
 
 SUBJECT=some-unique-id
+DISCARD_MONGO_STRING_REGX="\\x1b]0;mongosh mongodb:\/\/<credentials>@127\.0\.0\.1:27017\/cte?directConnection=true&serverSelectionTimeoutMS=2000\\x07\\x1b\[1G \\x1b\[1G"
 
 # --- Locks -------------------------------------------------------
 LOCK_FILE=/tmp/$SUBJECT.lock
@@ -262,7 +263,7 @@ out_docker_stats() {
 
 out_plugin_version(){
   # Execute the command and filter the output
-  command_output=$($2 exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.$1.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d')
+  command_output=$($2 exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.$1.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
 
   # Store the plugin values in a variable
   plugin_values=$(echo "$command_output" | grep -Po "(?<=plugin: ')[^']*")
@@ -295,46 +296,52 @@ out_platform_details() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    SETTINGS=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
-    CE_VERSION=$(echo $SETTINGS | grep -Po "(?<=databaseVersion: ')[^']*")
+    SETTINGS=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{'databaseVersion': 1, 'uid':1, _id:0})" | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    CE_VERSION=$(echo "$SETTINGS" | grep -Po "(?<=databaseVersion: ')[^']*")
     echo "------- CE Platform Details -------" >&$OUT
     echo "> CE-Version: $CE_VERSION" >>$OUT
 
-    CE_UID=$(echo $SETTINGS | grep -Po "(?<=uid: ')[^']*")
+    CE_UID=$(echo "$SETTINGS" | grep -Po "(?<=uid: ')[^']*")
     echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
 
     echo -e "\n------- Proxy Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Settings Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0, logLevel:1, logsCleanup:1, ssoEnable:1, forceAuth:1, secretsManagerSettings:{enabled:1, params:{authMethod:1, provider:1}}})" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{_id:0, logLevel:1, logsCleanup:1, ssoEnable:1, forceAuth:1, secretsManagerSettings:{enabled:1, params:{authMethod:1, provider:1}}})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Module Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{platforms: 1, _id:0})" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{platforms: 1, _id:0})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Plugin Repo Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- CTE Plugin Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
-    echo "Active Indicator(s): $($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.indicators.countDocuments({active:true})" | sed -e '/podman/d' -e '/exit code/d')" >> $OUT
-    echo "Not Active Indicator(s): $($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.indicators.countDocuments({active:false})" | sed -e '/podman/d' -e '/exit code/d')" >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    active_indicators=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.indicators.countDocuments({active:true})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Active Indicator(s): $active_indicators" >> $OUT
+    not_active_indicators=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.indicators.countDocuments({active:false})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Not Active Indicator(s): $not_active_indicators" >> $OUT
 
     echo -e "\n------- CTO Plugin Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
-    echo "Alert(s): $($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_alerts.countDocuments({})" | sed -e '/podman/d' -e '/exit code/d')" >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    alerts=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.itsm_alerts.countDocuments({})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Alert(s): $alerts" >> $OUT
     
     echo -e "\n------- URE Plugin Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
-    echo "User(s): $($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_users.countDocuments({type:'user'})" | sed -e '/podman/d' -e '/exit code/d')" >> $OUT
-    echo "Host(s): $($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_users.countDocuments({type:'host'})" | sed -e '/podman/d' -e '/exit code/d')" >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    users=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cre_users.countDocuments({type:'user'})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "User(s): $users" >> $OUT
+    hosts=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cre_users.countDocuments({type:'host'})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Host(s): $hosts" >> $OUT
 
     echo -e "\n------- ARE Plugin Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/podman/d' -e '/exit code/d' >>$OUT
-    echo "Application(s): $($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_applications.countDocuments({})" | sed -e '/podman/d' -e '/exit code/d')" >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    applications=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.grc_applications.countDocuments({})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Application(s): $applications" >> $OUT
 
     echo -e "\n------- CLS Plugin Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e 's/\"transformData\"/\"MappingTransformation\"/g' -e '/podman/d' -e '/exit code/d' >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e 's/\"transformData\"/\"MappingTransformation\"/g' -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
     
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
     out_plugin_version "configurations" $podman_compose
@@ -344,61 +351,67 @@ out_platform_details() {
     out_plugin_version "itsm_configurations" $podman_compose
 
     echo -e "\n------- CTE Business Rule Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
     
     echo -e "\n------- CTO Business Rule Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_business_rules.find({}, {name: 1, muted:1, alertFilters:1, dedupeRules:1, muteRules:1, queues:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.itsm_business_rules.find({}, {name: 1, muted:1, alertFilters:1, dedupeRules:1, muteRules:1, queues:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- URE Business Rule Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_business_rules.find({}, {name: 1, muted:1, userFilters:1, muteRules:1, actions:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cre_business_rules.find({}, {name: 1, muted:1, userFilters:1, muteRules:1, actions:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
   
     echo -e "\n------- ARE Business Rule Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.grc_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
   
     echo -e "\n------- CLS Business Rule Details --------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_business_rules.find({}, {name: 1, muted:1, filters:1, siemMappings:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_business_rules.find({}, {name: 1, muted:1, filters:1, siemMappings:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
   else
-    SETTINGS=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find()")
-    CE_VERSION=$(echo $SETTINGS | grep -Po "(?<=databaseVersion: ')[^']*")
+    SETTINGS=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{'databaseVersion': 1, 'uid':1, _id:0})" | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    CE_VERSION=$(echo "$SETTINGS" | grep -Po "(?<=databaseVersion: ')[^']*")
 
     echo "------- CE Platform Details -------" >&$OUT
     echo "> CE-Version: $CE_VERSION" >>$OUT
 
-    CE_UID=$(echo $SETTINGS | grep -Po "(?<=uid: ')[^']*")
+    CE_UID=$(echo "$SETTINGS" | grep -Po "(?<=uid: ')[^']*")
     echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
 
     echo -e "\n------- Proxy Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Settings Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0, logLevel:1, logsCleanup:1, ssoEnable:1, forceAuth:1, secretsManagerSettings:{enabled:1, params:{authMethod:1, provider:1}}})" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{_id:0, logLevel:1, logsCleanup:1, ssoEnable:1, forceAuth:1, secretsManagerSettings:{enabled:1, params:{authMethod:1, provider:1}}})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Module Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.settings.find({},{platforms: 1, _id:0})" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{platforms: 1, _id:0})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Plugin Repo Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- CTE Plugin Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
-    echo "Active Indicator(s): $($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.indicators.countDocuments({active:true})" | sed -e '/\"t\"/d')" >> $OUT
-    echo "Not Active Indicator(s): $($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.indicators.countDocuments({active:false})" | sed -e '/\"t\"/d')" >> $OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    active_indicators=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.indicators.countDocuments({active:true})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Active Indicator(s): $active_indicators" >> $OUT
+    not_active_indicators=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.indicators.countDocuments({active:false})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Not Active Indicator(s): $not_active_indicators" >> $OUT
 
     echo -e "\n------- CTO Plugin Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
-    echo "Alert(s): $($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_alerts.countDocuments({})" | sed -e '/\"t\"/d')" >> $OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.itsm_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    alerts=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.itsm_alerts.countDocuments({})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Alert(s): $alerts" >> $OUT
 
     echo -e "\n------- URE Plugin Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
-    echo "User(s): $($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_users.countDocuments({type:'user'})" | sed -e '/\"t\"/d')" >> $OUT
-    echo "Host(s): $($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_users.countDocuments({type:'host'})" | sed -e '/\"t\"/d')" >> $OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cre_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    users=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cre_users.countDocuments({type:'user'})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "User(s): $users" >> $OUT
+    hosts=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cre_users.countDocuments({type:'host'})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Host(s): $hosts" >> $OUT
 
     echo -e "\n------- ARE Plugin Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
-    echo "Application(s): $($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_applications.countDocuments({})" | sed -e '/\"t\"/d')" >> $OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.grc_configurations.find({}, {name: 1, plugin:1, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    applications=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.grc_applications.countDocuments({})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Application(s): $applications" >> $OUT
 
     echo -e "\n------- CLS Plugin Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray()" | sed -e '/\"t\"/d' -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
   
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
     out_plugin_version "configurations" $docker_compose
@@ -408,19 +421,19 @@ out_platform_details() {
     out_plugin_version "itsm_configurations" $docker_compose
 
     echo -e "\n------- CTE Business Rule Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
     
     echo -e "\n------- CTO Business Rule Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.itsm_business_rules.find({}, {name: 1, muted:1, alertFilters:1, dedupeRules:1, muteRules:1, queues:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.itsm_business_rules.find({}, {name: 1, muted:1, alertFilters:1, dedupeRules:1, muteRules:1, queues:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- URE Business Rule Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cre_business_rules.find({}, {name: 1, muted:1, userFilters:1, muteRules:1, actions:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cre_business_rules.find({}, {name: 1, muted:1, userFilters:1, muteRules:1, actions:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
   
     echo -e "\n------- ARE Business Rule Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.grc_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.grc_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
   
     echo -e "\n------- CLS Business Rule Details --------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.cls_business_rules.find({}, {name: 1, muted:1, filters:1, siemMappings:1, _id:0}).toArray()" | sed -e '/\"t\"/d' >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_business_rules.find({}, {name: 1, muted:1, filters:1, siemMappings:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
   fi
   stop_spin "CE Details\t\t" $pid "success"
   echo $OUT
@@ -502,9 +515,9 @@ out_tenant_names() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find({},{_id:0, name:1, tenantName:1, initialRange:1, alert_types:1})" | sed -e '/podman/d' -e '/exit code/d' >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.tenants.find({},{_id:0, name:1, tenantName:1, initialRange:1, alert_types:1})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
   else
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.tenants.find({},{_id:0, name:1, tenantName:1, initialRange:1, alert_types:1})" | sed -e '/\"t\"/d' >> $OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.tenants.find({},{_id:0, name:1, tenantName:1, initialRange:1, alert_types:1})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
   fi
   stop_spin "Tenant Names\t" $pid "success"
   echo $OUT

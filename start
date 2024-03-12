@@ -3,6 +3,10 @@
 . ./.env
 set -e
 
+if [ -n "${HA_NFS_DATA_DIRECTORY}" ]; then
+    . ${HA_NFS_DATA_DIRECTORY}/config/.env
+fi
+
 if [ -f "/.cloud_exchange_vm.marker" ]; then
     file_path="/opt/cloudexchange/containers/ce_containers.tar"
     if [ -f "$file_path" ] && [ -z $SKIP_IMPORT ]; then
