@@ -8,8 +8,8 @@ from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
 
 load_dotenv()
-path = os.environ.get("LOCATION")
-load_dotenv(path)
+load_dotenv(os.environ.get("LOCATION"))
+load_dotenv(f'{os.environ.get("HA_NFS_DATA_DIRECTORY")}/config/.env', override=True)
 
 MAINTENANCE_PASSWORD_ESCAPED = os.getenv("MAINTENANCE_PASSWORD_ESCAPED")
 HA_CURRENT_NODE = os.environ["HA_CURRENT_NODE"]
@@ -50,6 +50,24 @@ def create_replica_set(connection_string):
             ]
         }
 
+        print("Validating if replica set is already initialized...")
+        retry_count = 0
+        while retry_count < REPLICA_SET_INITIALIZE_RETRY_COUNT:
+            retry_count += 1
+            try:
+                replica_status = client.admin.command("replSetGetStatus")
+                if replica_status.get("ok") == 1.0:
+                    print("The MongoDB Replica set is already initialized.")
+                    exit(1)
+            except ServerSelectionTimeoutError as ex:
+                if retry_count == REPLICA_SET_INITIALIZE_RETRY_COUNT:
+                    raise ex
+                time.sleep(30)
+            except OperationFailure as error:
+                if 'NotYetInitialized' in str(error):
+                    break
+                raise error
+
         print("Initializing MongoDB replica set...")
         retry_count = 0
         while retry_count < REPLICA_SET_INITIALIZE_RETRY_COUNT:
@@ -65,6 +83,7 @@ def create_replica_set(connection_string):
 
         retry = 30
         wait_time = 30
+        settings_found = False
         while True:
             print("Waiting for migrations to be completed...")
             time.sleep(5)
@@ -77,6 +96,9 @@ def create_replica_set(connection_string):
                 retry -= 1
                 time.sleep(wait_time)
                 continue
+            if not settings_found:
+                print("Settings collection found in database.")
+                settings_found = True
             db_version = dict(response).get("databaseVersion", "")
             if db_version == os.environ["INSTALL_VERSION"]:
                 print("Migrations completed.")
@@ -86,7 +108,6 @@ def create_replica_set(connection_string):
                     print("Execute this command in remaining nodes to form a cluster:\n  > ./start")
                 break
     except OperationFailure as ex:
-        print("The MongoDB Replica set is already initialized.")
         raise ex
     finally:
         client.close()
@@ -123,6 +144,17 @@ def update_connection_info(old_ip, new_ip):
         f"HA_PRIMARY_NODE_IP={new_ip}"
     )
     with open(".env", "w+") as env_file:
+        env_file.write(content)
+
+    # Update shared .env file
+    env_location = f'{os.environ.get("HA_NFS_DATA_DIRECTORY")}/config/.env'
+    with open(env_location, "r") as env_file:
+        content = env_file.read()
+    content = content.replace(
+        f"HA_PRIMARY_NODE_IP={old_ip}",
+        f"HA_PRIMARY_NODE_IP={new_ip}"
+    )
+    with open(env_location, "w+") as env_file:
         env_file.write(content)
 
 def remove_replica_set(connection_string):
