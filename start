@@ -20,16 +20,17 @@ fi
 
 if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1 ]; then  
     if [ `grep -c "7.9" /etc/redhat-release` -ge 1 ]; then
-        docker-compose version &> /dev/null
+        docker compose version &> /dev/null
         if [ $? -eq 127 ]; then
-            echo "Could not find docker-compose"
+            echo "Could not find docker compose"
             exit 1;
         else
             if [ -z "${HA_IP_LIST}" ]; then
-                docker-compose --compatibility up --remove-orphans -d
+                docker compose --compatibility up --remove-orphans -d
+                alias compose_command="docker compose -f docker-compose.yml"
             else
-                docker-compose -f docker-compose-ha.yml --env-file=$HA_NFS_DATA_DIRECTORY/config/.env --compatibility up --remove-orphans -d
-                alias compose_command="docker-compose -f docker-compose-ha.yml"
+                docker compose -f docker-compose-ha.yml --env-file=$HA_NFS_DATA_DIRECTORY/config/.env --compatibility up --remove-orphans -d
+                alias compose_command="docker compose -f docker-compose-ha.yml"
             fi
         fi
     else
@@ -40,6 +41,7 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
         else
             if [ -z "${HA_IP_LIST}" ]; then
                 podman-compose -f podman-compose.yml up -d
+                alias compose_command="podman-compose -f podman-compose.yml"
             else
                 podman-compose -f podman-compose-ha.yml --env-file=$HA_NFS_DATA_DIRECTORY/config/.env up -d
                 alias compose_command="podman-compose -f podman-compose-ha.yml"
@@ -47,15 +49,16 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
         fi
     fi
 else 
-    docker-compose version &> /dev/null
+    docker compose version &> /dev/null
     if [ $? -eq 127 ]; then
         podman-compose version &> /dev/null
         if [ $? -eq 127 ]; then
-            echo "Could not find docker-compose or podman-compose"
+            echo "Could not find docker compose or podman-compose"
             exit 1;
         else
             if [ -z "${HA_IP_LIST}" ]; then
                 podman-compose -f podman-compose.yml up -d
+                alias compose_command="podman-compose -f podman-compose.yml"
             else
                 podman-compose -f podman-compose-ha.yml --env-file=$HA_NFS_DATA_DIRECTORY/config/.env up -d
                 alias compose_command="podman-compose -f podman-compose-ha.yml"
@@ -63,16 +66,23 @@ else
         fi
     else
         if [ -z "${HA_IP_LIST}" ]; then
-            docker-compose --compatibility up --remove-orphans -d
+            docker compose --compatibility up --remove-orphans -d
+            alias compose_command="docker compose -f docker-compose.yml"
         else
-            docker-compose -f docker-compose-ha.yml --env-file=$HA_NFS_DATA_DIRECTORY/config/.env --compatibility up --remove-orphans -d
-            alias compose_command="docker-compose -f docker-compose-ha.yml"
+            docker compose -f docker-compose-ha.yml --env-file=$HA_NFS_DATA_DIRECTORY/config/.env --compatibility up --remove-orphans -d
+            alias compose_command="docker compose -f docker-compose-ha.yml"
         fi
     fi
 fi
 
+# Wait RabbitMQ to start
+while true; do
+    compose_command exec -- rabbitmq-stats rabbitmqctl enable_feature_flag all > /dev/null 2>/dev/null && echo "" && echo "Enabling all feature flags" && echo "" && echo "Enabled all feature flags" && break
+    echo "Waiting for RabbitMQ to start..."
+    sleep 10;
+done
+
 if [ -n "${HA_IP_LIST}" ]; then
-    sleep 30
     if [ "$HA_PRIMARY_NODE_IP" = "$HA_CURRENT_NODE" ]; then
         ./replica_set --initiate
     else
@@ -82,10 +92,8 @@ if [ -n "${HA_IP_LIST}" ]; then
         compose_command exec -- rabbitmq-stats rabbitmqctl reset
         compose_command exec -- rabbitmq-stats rabbitmqctl join_cluster rabbit@$HA_PRIMARY_NODE_IP
         compose_command exec -- rabbitmq-stats rabbitmqctl start_app
-        if [ "${SYNC_STRATEGY}" = "2" ]; then
-            compose_command exec -- rabbitmq-stats rabbitmqctl set_policy ha "." '{"ha-mode":"all","ha-sync-mode":"automatic","ha-sync-batch-size":20}'
-        else
-            compose_command exec -- rabbitmq-stats rabbitmqctl set_policy ha "." '{"ha-mode":"all","ha-sync-mode":"manual"}'
-        fi
+        compose_command exec -- rabbitmq-stats rabbitmq-queues add_member cloudexchange_9 rabbit@$HA_CURRENT_NODE
+        compose_command exec -- rabbitmq-stats rabbitmq-queues add_member cloudexchange_6 rabbit@$HA_CURRENT_NODE
+        compose_command exec -- rabbitmq-stats rabbitmq-queues add_member cloudexchange_3 rabbit@$HA_CURRENT_NODE
     fi
 fi
