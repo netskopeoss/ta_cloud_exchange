@@ -21,10 +21,10 @@ touch $LOCK_FILE
 
 . ./.env
 if [ -n "${HA_IP_LIST}" ]; then
-  docker_compose="docker-compose -f docker-compose-ha.yml"
+  docker_compose="docker compose -f docker-compose-ha.yml"
   podman_compose="podman-compose -f podman-compose-ha.yml"
 else
-  docker_compose="docker-compose -f docker-compose.yml"
+  docker_compose="docker compose -f docker-compose.yml"
   podman_compose="podman-compose -f podman-compose.yml"
 fi
 
@@ -43,10 +43,10 @@ rabbitmq_running=false
 
 check_mongo_running() {
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    if [ $(podman ps -q -a -f name="mongodb") ]; then
+    if [[ $(podman ps -q -a -f name="mongodb") ]]; then
       retry=0
       while [ $retry -lt 4 ]; do
-        if [ $(podman ps -q -f status=running -f name="mongodb") ]; then
+        if [[ $(podman ps -q -f status=running -f name="mongodb") ]]; then
           echo "true"
           exit
         else
@@ -58,10 +58,10 @@ check_mongo_running() {
     fi
     echo "false"
   else
-    if [ $(docker ps -q -a -f name="mongodb") ]; then
+    if [[ $(docker ps -q -a -f name="mongodb") ]]; then
       retry=0
       while [ $retry -lt 4 ]; do
-        if [ $(docker ps -q -f status=running -f name="mongodb") ]; then
+        if [[ $(docker ps -q -f status=running -f name="mongodb") ]]; then
           echo "true"
           exit
         else
@@ -305,13 +305,13 @@ out_platform_details() {
     echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
 
     echo -e "\n------- Proxy Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{proxy:{scheme: {\$ifNull: ['\$proxy.scheme', null]}, server:{\$ifNull: ['\$proxy.server', null]}, username:{\$ifNull: ['\$proxy.username', null]}}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Settings Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{_id:0, logLevel:1, logsCleanup:1, ssoEnable:1, forceAuth:1, secretsManagerSettings:{enabled:1, params:{authMethod:1, provider:1}}})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{_id:0, logLevel:{\$ifNull: ['\$logLevel', null]}, logsCleanup:{\$ifNull: ['\$logsCleanup', null]}, ssoEnable:{\$ifNull: ['\$ssoEnable', null]}, forceAuth:{\$ifNull: ['\$forceAuth', null]}, secretsManagerSettings:{enabled:{\$ifNull: ['\$secretsManagerSettings.enabled', null]}, params:{authMethod:{\$ifNull: ['\$secretsManagerSettings.params.authMethod', null]}, provider:{\$ifNull: ['\$secretsManagerSettings.provider', null]}}}})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Module Details -------" >>$OUT
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{platforms: 1, _id:0})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{platforms: {\$ifNull: ['\$platforms', null]}, _id:0})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Plugin Repo Details -------" >>$OUT
     $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
@@ -344,11 +344,11 @@ out_platform_details() {
     $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e 's/\"transformData\"/\"MappingTransformation\"/g' -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
     
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
-    out_plugin_version "configurations" $podman_compose
-    out_plugin_version "cls_configurations" $podman_compose
-    out_plugin_version "grc_configurations" $podman_compose
-    out_plugin_version "cre_configurations" $podman_compose
-    out_plugin_version "itsm_configurations" $podman_compose
+    out_plugin_version "configurations" "$podman_compose"
+    out_plugin_version "cls_configurations" "$podman_compose"
+    out_plugin_version "grc_configurations" "$podman_compose"
+    out_plugin_version "cre_configurations" "$podman_compose"
+    out_plugin_version "itsm_configurations" "$podman_compose"
 
     echo -e "\n------- CTE Business Rule Details --------" >>$OUT
     $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
@@ -375,13 +375,13 @@ out_platform_details() {
     echo "> CE-INSTALLATION ID: $CE_UID" >>$OUT
 
     echo -e "\n------- Proxy Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{proxy:{scheme: 1, server:1, username:1}, _id:0})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{proxy:{scheme: {\$ifNull: ['\$proxy.scheme', null]}, server:{\$ifNull: ['\$proxy.server', null]}, username:{\$ifNull: ['\$proxy.username', null]}}, _id:0})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Settings Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{_id:0, logLevel:1, logsCleanup:1, ssoEnable:1, forceAuth:1, secretsManagerSettings:{enabled:1, params:{authMethod:1, provider:1}}})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{_id:0, logLevel:{\$ifNull: ['\$logLevel', null]}, logsCleanup:{\$ifNull: ['\$logsCleanup', null]}, ssoEnable:{\$ifNull: ['\$ssoEnable', null]}, forceAuth:{\$ifNull: ['\$forceAuth', null]}, secretsManagerSettings:{enabled:{\$ifNull: ['\$secretsManagerSettings.enabled', null]}, params:{authMethod:{\$ifNull: ['\$secretsManagerSettings.params.authMethod', null]}}, provider:{\$ifNull: ['\$secretsManagerSettings.provider', null]}}})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Module Details -------" >>$OUT
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{platforms: 1, _id:0})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{platforms: {\$ifNull: ['\$platforms', null]}, _id:0})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
 
     echo -e "\n------- Plugin Repo Details -------" >>$OUT
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.repos.find({}, {name: 1, url:1, isDefault:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
@@ -414,11 +414,11 @@ out_platform_details() {
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
   
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
-    out_plugin_version "configurations" $docker_compose
-    out_plugin_version "cls_configurations" $docker_compose
-    out_plugin_version "grc_configurations" $docker_compose
-    out_plugin_version "cre_configurations" $docker_compose
-    out_plugin_version "itsm_configurations" $docker_compose
+    out_plugin_version "configurations" "$docker_compose"
+    out_plugin_version "cls_configurations" "$docker_compose"
+    out_plugin_version "grc_configurations" "$docker_compose"
+    out_plugin_version "cre_configurations" "$docker_compose"
+    out_plugin_version "itsm_configurations" "$docker_compose"
 
     echo -e "\n------- CTE Business Rule Details --------" >>$OUT
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
@@ -582,40 +582,40 @@ outputs=()
 # check whether containers are up or not
 
 if [[ $RHEL: == *"Red Hat"* ]]; then
-  if [ $(podman ps -q -a -f name="core") ]; then
+  if [[ $(podman ps -q -a -f name="core") ]]; then
     core_check=true
-    if [ $(podman ps -q -f status=running -f name="core") ]; then
+    if [[ $(podman ps -q -f status=running -f name="core") ]]; then
       core_running=true
     fi
   fi
-  if [ $(podman ps -q -a -f name="ui") ]; then
+  if [[ $(podman ps -q -a -f name="ui") ]]; then
     ui_check=true
   fi
-  if [ $(podman ps -q -a -f name="mongodb") ]; then
+  if [[ $(podman ps -q -a -f name="mongodb") ]]; then
     mongo_check=true
   fi
-  if [ $(podman ps -q -a -f name="rabbitmq") ]; then
+  if [[ $(podman ps -q -a -f name="rabbitmq") ]]; then
     rabbitmq_check=true
-    if [ $(podman ps -q -f status=running -f name="rabbitmq") ]; then
+    if [[ $(podman ps -q -f status=running -f name="rabbitmq") ]]; then
       rabbitmq_running=true
     fi
   fi
 else
-  if [ $(docker ps -q -a -f name="core") ]; then
+  if [[ $(docker ps -q -a -f name="core") ]]; then
     core_check=true
-    if [ $(docker ps -q -f status=running -f name="core") ]; then
+    if [[ $(docker ps -q -f status=running -f name="core") ]]; then
       core_running=true
     fi
   fi
-  if [ $(docker ps -q -a -f name="ui") ]; then
+  if [[ $(docker ps -q -a -f name="ui") ]]; then
     ui_check=true
   fi
-  if [ $(docker ps -q -a -f name="mongodb") ]; then
+  if [[ $(docker ps -q -a -f name="mongodb") ]]; then
     mongo_check=true
   fi
-  if [ $(docker ps -q -a -f name="rabbitmq") ]; then
+  if [[ $(docker ps -q -a -f name="rabbitmq") ]]; then
     rabbitmq_check=true
-    if [ $(docker ps -q -f status=running -f name="rabbitmq") ]; then
+    if [[ $(docker ps -q -f status=running -f name="rabbitmq") ]]; then
       rabbitmq_running=true
     fi
   fi

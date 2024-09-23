@@ -1,7 +1,7 @@
 version: "3.3"
 services:
   rabbitmq-stats:
-    image: index.docker.io/rabbitmq:3.12.10-management
+    image: index.docker.io/rabbitmq:3.13.1-management
     user: "1001:1001"
     env_file:
       - ./.env
