@@ -1,11 +1,11 @@
 """Migrate CE Script."""
 import atexit
-import os
-import signal
-import subprocess
-import re
 import ipaddress
+import os
+import re
+import subprocess
 from enum import Enum
+from getpass import getpass
 
 
 class Color(str, Enum):
@@ -97,9 +97,46 @@ def isRedHat79():
         exit(1)
 
 
+def run_ssh_scp(cmd, password, *args, print_output=True):
+    """Run ssh/scp command and return data."""
+    pid, fd = os.forkpty()
+    if pid == 0:  # child
+        os.execlp(cmd, *args)
+    data = None
+    success = False
+    while True:
+        try:
+            data = os.read(fd, 1024)
+        except OSError:
+            return data, True
+        if not data:
+            return data, success
+        data = data.decode().lower()
+        if "password:" in data:  # ssh prompt
+            password_input = f"{password}\n"
+            os.write(fd, password_input.encode())
+        elif "passphrase for key" in data:
+            passphrase_input = f"{password}\n"
+            os.write(fd, passphrase_input.encode())
+        elif "are you sure you want to continue" in data:
+            os.write(fd, b"yes\n")
+        if "permission denied" in data:
+            return data, False
+        elif "connection timed out" in data:
+            return data, False
+        elif "usage:" in data:
+            return data, False
+        elif "cannot create" in data:
+            return data, False
+        else:
+            if print_output:
+                print(data)
+
+
 backup_zip = "ce_backup.zip"
 remote_user = None
 remote_host = None
+remote_password = None
 remote_ce_dir = None
 auth_method = None
 ssh_auth = []
@@ -180,6 +217,14 @@ def backup(type):
                 "Backup files zipped successfully for mongo-data and rabbitmq."
             )
         elif type == Steps.BACKUP_CUSTOM_PLUGINS:
+            if not os.path.exists(
+                os.path.join(local_backup_path, "custom_plugins")
+            ):
+                print_with_color(
+                    "Folder for custom plugins not found. Skipping backup.",
+                    Color.BOLD
+                )
+                return
             subprocess.run(
                 [
                     "zip",
@@ -192,7 +237,7 @@ def backup(type):
             print_pass("Backup files zipped successfully for custom plugins.")
         elif type == Steps.BACKUP_REPOS:
             if not os.path.exists(
-                os.path.join(local_backup_path, "repos", "plugins")
+                os.path.join(local_backup_path, "repos")
             ):
                 print_with_color(
                     "Repos folder not found. Skipping backup.",
@@ -204,11 +249,30 @@ def backup(type):
                     "zip",
                     "-r",
                     backup_zip,
-                    os.path.join(local_backup_path, "repos", "plugins"),
+                    os.path.join(local_backup_path, "repos"),
                 ],
                 check=True,
             )
             print_pass("Backup files zipped successfully for repos.")
+        elif type == Steps.BACKUP_PLUGIN:
+            if not os.path.exists(
+                os.path.join(local_backup_path, "plugins")
+            ):
+                print_with_color(
+                    "Plugins folder not found. Skipping backup.",
+                    Color.BOLD
+                )
+                return
+            subprocess.run(
+                [
+                    "zip",
+                    "-r",
+                    backup_zip,
+                    os.path.join(local_backup_path, "plugins"),
+                ],
+                check=True,
+            )
+            print_pass("Backup files zipped successfully for plugins.")
         else:
             raise ValueError("Invalid backup type.")
     except Exception as error:
@@ -220,6 +284,7 @@ def get_ssh_credentials():
     """Get SSH credentials."""
     global remote_user
     global remote_host
+    global remote_password
     global remote_ce_dir
     global ce_as_a_vm_dest
     global ssh_auth
@@ -233,7 +298,9 @@ def get_ssh_credentials():
                 )
             ).strip()
             if not remote_user:
-                print_warning("Destination machine's username cannot be empty.")
+                print_warning(
+                    "Destination machine's username cannot be empty."
+                )
             tried += 1
         if not remote_user:
             raise ValueError(
@@ -263,38 +330,64 @@ def get_ssh_credentials():
         auth_method = None
         tried = 0
         while not auth_method and tried < 3:
-            auth_method = (
-                input(
-                    "Select authentication method for the SSH "
-                    "connection{}: \n"
-                    "1. pem\n"
-                    "2. password\n"
-                    "> "
-                    .format(
-                        f" ({3-tried} out of 3 tries remaining)"
-                        if tried > 0 else ""
+            try:
+                auth_method = (
+                    input(
+                        "Select authentication method for the SSH "
+                        "connection{}: \n"
+                        "1. pem\n"
+                        "2. password\n"
+                        "> "
+                        .format(
+                            f" ({3-tried} out of 3 tries remaining)"
+                            if tried > 0 else ""
+                        )
                     )
+                    .strip()
+                    .lower()
                 )
-                .strip()
-                .lower()
-            )
 
-            ssh_auth = []
-            if auth_method in ["1", "pem"]:
-                pem_file_path = input(
-                    "Enter the full path to your .pem file: "
-                ).strip()
-                validate_path(pem_file_path)
-                ssh_auth = ["-i", pem_file_path]
-            elif auth_method in ["2", "password"]:
-                pass
-            else:
+                ssh_auth = []
+                if auth_method in ["1", "pem"]:
+                    pem_file_path = input(
+                        "Enter the full path to your .pem file: "
+                    ).strip()
+                    validate_path(pem_file_path)
+                    remote_password = getpass(
+                        "Enter the password for your .pem file: "
+                    ).strip()
+                    if not remote_password:
+                        confirm = input(
+                            "You have entered an empty password. Are you sure"
+                            " that password is not required for .pem file? "
+                            "(y/n) [default: n]: "
+                        ).strip().lower()
+                        if confirm not in ['y', 'yes']:
+                            raise ValueError(
+                                "Password cannot be empty for .pem file."
+                            )
+                        else:
+                            remote_password = ""
+                    ssh_auth = ["-i", pem_file_path]
+                elif auth_method in ["2", "password"]:
+                    remote_password = getpass(
+                        "Enter the destination machine's password "
+                        f"for user {remote_user}: "
+                    ).strip()
+                    if not remote_password:
+                        raise ValueError(
+                            "Destination machine's password cannot be empty."
+                        )
+                else:
+                    auth_method = None
+                    print_warning(
+                        "Invalid authentication way provided for SSH "
+                        "authentication. Valid authentication ways are "
+                        "'pem (1)' and 'password (2)'."
+                    )
+            except ValueError as err:
                 auth_method = None
-                print_warning(
-                    "Invalid authentication way provided for SSH "
-                    "authentication. Valid authentication ways are 'pem (1)' "
-                    "and 'password (2)'."
-                )
+                print_warning(str(err))
             tried += 1
         if not auth_method:
             raise ValueError(
@@ -315,18 +408,24 @@ def get_ssh_credentials():
                         if tried > 0 else ""
                     )
                 ).strip().rstrip("/")
-                ssh_command = (
-                    ["ssh"]
-                    + ssh_auth
-                    + [
-                        f"{remote_user}@{remote_host}",
-                        f"[ -d {remote_ce_dir} ] && echo true || echo false",
-                    ]
+                output, success = run_ssh_scp(
+                    "ssh",
+                    remote_password,
+                    "ssh",
+                    *ssh_auth,
+                    f"{remote_user}@{remote_host}",
+                    f"[ -d {remote_ce_dir} ] && echo true || echo false",
+                    print_output=False
                 )
-                output = subprocess.run(
-                    ssh_command, check=True, capture_output=True
-                )
-                if output.stdout.decode().strip().lower() == "false":
+                if not success:
+                    print_warning(
+                        "Unable to connect with SSH credentials. "
+                        "Got: {}".format(
+                            output
+                        )
+                    )
+                    remote_ce_dir = None
+                if output == "false":
                     print_warning(
                         f"{remote_ce_dir} does not exist on the"
                         " destination machine."
@@ -335,7 +434,8 @@ def get_ssh_credentials():
                 tried += 1
             if not remote_ce_dir:
                 raise ValueError(
-                    "Invalid destination path provided after 3 tries. Exiting..."
+                    "Invalid destination path provided after 3 tries. "
+                    "Exiting..."
                 )
             print_with_color(
                 "'data' folder from the current system will be copied to "
@@ -355,16 +455,24 @@ def move_backup_files():
         f"{Color.BOLD}Sending data to another VM...",
         Color.YELLOW
     )
-    global backup_zip
-    global remote_user
-    global remote_host
-    global remote_ce_dir
-    global ssh_auth
 
     try:
         remote_location = f"{remote_user}@{remote_host}:{remote_ce_dir}"
         scp_command = ["scp"] + ssh_auth + [backup_zip, remote_location]
-        subprocess.run(scp_command, check=True)
+        output, success = run_ssh_scp(
+            "scp",
+            remote_password,
+            *scp_command,
+            print_output=False
+        )
+        if not success:
+            print_warning(
+                "Unable to connect with SSH credentials. "
+                "Got: {}\nExiting...".format(
+                    output
+                )
+            )
+            exit(1)
         print_with_color(
             f"{Color.BOLD}Data sent to the destination VM successfully.",
             Color.YELLOW
@@ -383,7 +491,20 @@ def move_backup_files():
                 f" -d {remote_ce_dir}",
             ]
         )
-        subprocess.run(ssh_command, check=True)
+        output, success = run_ssh_scp(
+            "ssh",
+            remote_password,
+            *ssh_command,
+            print_output=False
+        )
+        if not success:
+            print_warning(
+                "Unable to unzip backup on the destination VM. "
+                "Got: {}\nExiting...".format(
+                    output
+                )
+            )
+            exit(1)
         print_pass(
             "Backup unzipped successfully on the destination VM.",
         )
@@ -541,10 +662,21 @@ def move_files_to_shared_drive_path():
                     f"[ -d {shared_drive_path} ] && echo true || echo false",
                 ]
             )
-            output = subprocess.run(
-                ssh_command, check=True, capture_output=True
+            output, success = run_ssh_scp(
+                "ssh",
+                remote_password,
+                *ssh_command,
+                print_output=False
             )
-            if output.stdout.decode().strip().lower() == "false":
+            if not success:
+                print_warning(
+                    "Unable to connect with SSH credentials. "
+                    "Got: {}\nExiting...".format(
+                        output
+                    )
+                )
+                exit(1)
+            if output == "false":
                 print_warning(
                     f"{shared_drive_path} does not exist on the "
                     "destination machine."
@@ -568,7 +700,18 @@ def move_files_to_shared_drive_path():
                 f" {shared_drive_path}/custom_plugins",
             ]
         )
-        subprocess.run(ssh_command, check=True)
+        output, success = run_ssh_scp(
+            "ssh",
+            remote_password,
+            *ssh_command,
+            print_output=False
+        )
+        if not success:
+            print_warning(
+                "Unable to copy files to the shared drive. "
+                "Got: {}\nExiting...".format(output)
+            )
+            exit(1)
         print_pass(
             "Custom plugins copied to the shared drive successfully."
         )
@@ -691,6 +834,7 @@ class Steps(Enum):
     BACKUP_RABBITMQ_AND_MONGO = "backup_rabbitmq_and_mongo"
     BACKUP_CUSTOM_PLUGINS = "backup_custom_plugins"
     BACKUP_REPOS = "backup_repos"
+    BACKUP_PLUGIN = "backup_plugin"
     MOVE_BACKUP_FILES = "move_backup_files"
     MOVE_FILES_TO_SHARED_DRIVE = "move_files_to_shared_drive"
     GRAB_MAINTENANCE_PASSWORD = "grab_maintenance_password"
@@ -710,6 +854,7 @@ steps_method_mapping = {
     ),
     Steps.BACKUP_CUSTOM_PLUGINS: lambda: backup(Steps.BACKUP_CUSTOM_PLUGINS),
     Steps.BACKUP_REPOS: lambda: backup(Steps.BACKUP_REPOS),
+    Steps.BACKUP_PLUGIN: lambda: backup(Steps.BACKUP_PLUGIN),
     Steps.MOVE_BACKUP_FILES: move_backup_files,
     Steps.GET_SSH_CREDENTIALS: get_ssh_credentials,
     Steps.CHECK_RABBITMQ_SIZE: check_rabbitmq_size,
@@ -743,7 +888,7 @@ remaining_steps = {
         "Next run the below commands in secondary and third nodes."
         f"\n{Color.BOLD}sudo python3 ./setup --location <shared_drive>",
         "Migrate RabbitMQ and Mongo data, run the following command one time"
-        f" only on primary node.\n{Color.BOLD}sudo ./restore_ha_backup",
+        f" only on primary node.\n{Color.BOLD}sudo MIGRATE_MONGO=false ./restore_ha_backup",
         "Start the containers, beginning with the primary node followed"
         f" by the other nodes, using\n{Color.BOLD}sudo ./start",
     ],
@@ -828,6 +973,7 @@ options_steps_mapping = {
         Steps.RESET_FILES,
         Steps.BACKUP_RABBITMQ_AND_MONGO,
         Steps.BACKUP_REPOS,
+        Steps.BACKUP_PLUGIN,
         Steps.BACKUP_CUSTOM_PLUGINS,
         Steps.SET_TO_CE_AS_VM_DEST,
         Steps.GET_SSH_CREDENTIALS,
@@ -841,6 +987,7 @@ options_steps_mapping = {
         Steps.RESET_FILES,
         Steps.BACKUP_RABBITMQ_AND_MONGO,
         Steps.BACKUP_REPOS,
+        Steps.BACKUP_PLUGIN,
         Steps.BACKUP_CUSTOM_PLUGINS,
         Steps.SET_TO_CE_AS_VM_DEST,
         Steps.GET_SSH_CREDENTIALS,
@@ -855,6 +1002,7 @@ options_steps_mapping = {
         Steps.RESET_FILES,
         Steps.BACKUP_RABBITMQ_AND_MONGO,
         Steps.BACKUP_REPOS,
+        Steps.BACKUP_PLUGIN,
         Steps.BACKUP_CUSTOM_PLUGINS,
         Steps.SET_TO_CE_AS_VM_DEST,
         Steps.GET_SSH_CREDENTIALS,
@@ -865,38 +1013,43 @@ options_steps_mapping = {
 }
 
 if __name__ == "__main__":
-    signal.signal(signal.SIGTERM, on_exit)
-    signal.signal(signal.SIGINT, on_exit)
     atexit.register(on_exit)
     message = (
         f"{Color.RED}{Color.BOLD}Note:- If you are proceeding for the "
         "Standalone to HA or HA to HA migration, Please make sure "
         "\n\t\tthat the shared drive is mounted on the destination machine"
         " which will be used in the HA and\n\t\t make sure all the services"
-        f" are up and running.{Color.END}"
+        " are up and running. Currently we do not support "
+        f"HA to Standalone migration.{Color.END}"
     )
     print_with_color(
         f"""
-        {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
+        {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Upgrade/Migration Tool.
 
         {message}
 
         {Color.BOLD}Select the option:
-            1. Upgrade Standalone
-            2. Upgrade HA
-            3. Upgrade to HA from Standalone
-            4. Migrate to CE as VM 5.0.1 from 3.x or 4.x Standalone
-            5. Migrate to CE as VM 5.0.1 from 5.0.0 Standalone
-            6. Migrate to CE as VM 5.0.1 HA from 5.0.0 Standalone
-            7. Migrate to CE as VM 5.0.1 HA from 5.0.0 HA
+            1. Upgrade Existing Standalone (Ubuntu/RHEL) to 5.1.0 from 4.2.0 or 5.0.x
+            2. Upgrade Existing HA (Ubuntu/RHEL) to 5.1.0 from 4.2.0 or 5.0.x
+            3. Upgrade to HA (Ubuntu/RHEL) 5.1.0 from Standalone (Ubuntu/RHEL) 4.2.0 or 5.0.x
+            4. Migrate to CE as VM (AWS/Azure/VMware) 5.1.0 from 4.2.0 Standalone (Ubuntu/RHEL)
+            5. Migrate to CE as VM (AWS/Azure/VMware) 5.1.0 from 5.0.0 or 5.0.1 Standalone (Ubuntu/RHEL)
+            6. Migrate to CE as VM (AWS/Azure/VMware) 5.1.0 HA from 5.0.0 or 5.0.1 Standalone (Ubuntu/RHEL)
+            7. Migrate to CE as VM (AWS/Azure/VMware) 5.1.0 HA from 5.0.0 or 5.0.1 HA (Ubuntu/RHEL)
         """,
         Color.BOLD
     )
-    option = input("Enter the option number: ").strip()
-    if option not in [str(i) for i in list(range(1, 8))]:
-        print_fail("Invalid option.")
+    try:
+        option = input("Enter the option number: ").strip()
+        if option not in [str(i) for i in list(range(1, 8))]:
+            print_fail("Invalid option.")
+            exit(1)
+        load_env()
+        for step in (
+            options_steps_mapping[int(option)]
+            + [Steps.PRINT_NEXT_STEPS]
+        ):
+            steps_method_mapping[step]()
+    except KeyboardInterrupt:
         exit(1)
-    load_env()
-    for step in options_steps_mapping[int(option)]+[Steps.PRINT_NEXT_STEPS]:
-        steps_method_mapping[step]()
     atexit.unregister(on_exit)
