@@ -104,24 +104,24 @@ AVAILABLE_INPUTS = {}
 CHECKS = {}
 
 MIN_CPU = 8
-MIN_MEM_KB = 0.95*16*1024**2
+MIN_MEM_KB = 0.90 * 16 * 1024**2 # 90% of 16 GB
 MEDIUM_PROFILE_REQUIREMENTS = [8, 16, 80, 20] # CPU, Memory (in GB), Disk (in GB), Free Disk (in GB)
 LARGE_PROFILE_REQUIREMENTS = [16, 32, 120, 20] # CPU, Memory (in GB), Disk (in GB), Free Disk (in GB)
 CE_PROFILING = {
     MEDIUM_PROFILE_REQUIREMENTS[0] : {
         "name": "Medium",
         "memory": MEDIUM_PROFILE_REQUIREMENTS[1], # in GB
-        "min_memory": MEDIUM_PROFILE_REQUIREMENTS[1] * 0.95 * 1024**2, # 95% of 16 GB
-        "min_disk_bytes": MEDIUM_PROFILE_REQUIREMENTS[2] * 0.95 * 1024**3 # 95% of 80 GB
+        "min_memory": MEDIUM_PROFILE_REQUIREMENTS[1] * 0.90 * 1024**2, # 90% of 16 GB
+        "min_disk_bytes": MEDIUM_PROFILE_REQUIREMENTS[2] * 0.90 * 1024**3 # 90% of 80 GB
     },
     LARGE_PROFILE_REQUIREMENTS[0] : {
         "name": "Large",
         "memory": LARGE_PROFILE_REQUIREMENTS[1], # in GB
-        "min_memory": LARGE_PROFILE_REQUIREMENTS[1] * 0.95 * 1024**2, # 95% of 32 GB
-        "min_disk_bytes": LARGE_PROFILE_REQUIREMENTS[2] * 0.95 * 1024**3 # 95% of 120 GB
+        "min_memory": LARGE_PROFILE_REQUIREMENTS[1] * 0.90 * 1024**2, # 90% of 32 GB
+        "min_disk_bytes": LARGE_PROFILE_REQUIREMENTS[2] * 0.90 * 1024**3 # 90% of 120 GB
     }
 }
-MIN_DISK_BYTES = 0.95 * 80 * 1024**3 # 95% of 80 GB
+MIN_DISK_BYTES = 0.90 * 80 * 1024**3 # 90% of 80 GB
 MIN_FREE_DISK_BYTES = 20*1024**3
 MIN_DOCKER_VERSION = "19.0.0"
 MIN_DOCKER_COMPOSE_VERSION = "2.16.0"
@@ -131,20 +131,27 @@ MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 N = 5
 MIN_HA_SUPPORTED_VERSION = "5.0.0"
 CURRENT_VERSION = "5.0.1"
-PREVIOUS_VERSION = "4.2.0"
-CURRENT_BETA_VERSION = "5.1.0-beta.1"
+PREVIOUS_VERSION = "5.1.0-beta.1"
+CURRENT_BETA_VERSION = "5.1.0-beta.2"
 CE_VERSION_1 = f"CE v{N}-{CURRENT_VERSION}"
-CE_VERSION_2 = f"CE v{N-1}-{PREVIOUS_VERSION}"
-CE_VERSION_3 = f"CE {CURRENT_BETA_VERSION}"
+# CE_VERSION_2 = f"CE v{N-1}-{PREVIOUS_VERSION}"
+CE_VERSION_2 = f"CE v{PREVIOUS_VERSION}"
+CE_VERSION_3 = f"CE v{CURRENT_BETA_VERSION}"
 CORE_VERSION_1_TAG = (
     f"netskopetechnicalalliances/cloudexchange:core{N}-{CURRENT_VERSION}"
 )
 UI_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-{CURRENT_VERSION}"
+# CORE_VERSION_2_TAG = (
+#     f"netskopetechnicalalliances/cloudexchange:core{N-1}-{PREVIOUS_VERSION}"
+# )
+# UI_VERSION_2_TAG = (
+#     f"netskopetechnicalalliances/cloudexchange:ui{N-1}-{PREVIOUS_VERSION}"
+# )
 CORE_VERSION_2_TAG = (
-    f"netskopetechnicalalliances/cloudexchange:core{N-1}-{PREVIOUS_VERSION}"
+    f"crestsystems/cloudexchange:core-{CURRENT_BETA_VERSION}"
 )
 UI_VERSION_2_TAG = (
-    f"netskopetechnicalalliances/cloudexchange:ui{N-1}-{PREVIOUS_VERSION}"
+    f"crestsystems/cloudexchange:ui-{CURRENT_BETA_VERSION}"
 )
 CORE_VERSION_BETA_TAG = (
     f"crestsystems/cloudexchange:core-{CURRENT_BETA_VERSION}"
@@ -155,8 +162,8 @@ UI_VERSION_BETA_TAG = (
 
 CORE_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
 UI_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
-CORE_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-latest"
-UI_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-latest"
+CORE_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
+UI_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
 
 RECOMMENDED_DOCKER_VERSION = "25.0.3"
 RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.27.0"
