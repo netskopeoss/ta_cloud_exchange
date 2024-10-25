@@ -3,8 +3,10 @@
 . ./.env
 set -e
 
+DB_VERSION_ENV_FILE_LOCATION="./.env.ceversion"
 if [ -n "${HA_NFS_DATA_DIRECTORY}" ]; then
     . ${HA_NFS_DATA_DIRECTORY}/config/.env
+    DB_VERSION_ENV_FILE_LOCATION="${HA_NFS_DATA_DIRECTORY}/config/.env.ceversion"
 fi
 
 if [ -f "/.cloud_exchange_vm.marker" ]; then
@@ -81,6 +83,10 @@ while true; do
     echo "Waiting for RabbitMQ to start..."
     sleep 10;
 done
+
+CURRENT_DATABASE_VERSION=$(compose_command exec -- core cat /opt/netskope/common/api/__init__.py | grep -oP "(?<=__version__ = \")[^\"]*")
+echo "CURRENT_DATABASE_VERSION=\"$CURRENT_DATABASE_VERSION\"" > "$DB_VERSION_ENV_FILE_LOCATION"
+export CURRENT_DATABASE_VERSION=$CURRENT_DATABASE_VERSION
 
 if [ -n "${HA_IP_LIST}" ]; then
     if [ "$HA_PRIMARY_NODE_IP" = "$HA_CURRENT_NODE" ]; then

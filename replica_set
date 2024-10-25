@@ -104,7 +104,7 @@ def create_replica_set(connection_string):
                 print("Settings collection found in database.")
                 settings_found = True
             db_version = dict(response).get("databaseVersion", "")
-            if db_version == os.environ["INSTALL_VERSION"]:
+            if db_version == os.environ["CURRENT_DATABASE_VERSION"]:
                 print(f"The database version {db_version} is correct.")
                 if isRedHat():
                     print("Execute this command in remaining nodes to form a cluster:\n  > sudo ./start")

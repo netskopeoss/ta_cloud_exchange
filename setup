@@ -130,34 +130,27 @@ MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 
 N = 5
 MIN_HA_SUPPORTED_VERSION = "5.0.0"
-CURRENT_VERSION = "5.0.1"
-PREVIOUS_VERSION = "5.1.0-beta.1"
-CURRENT_BETA_VERSION = "5.1.0-beta.2"
+CURRENT_VERSION = "5.1.0"
+PREVIOUS_VERSION = "5.0.1"
+CURRENT_BETA_VERSION = "5.1.0-beta"
 CE_VERSION_1 = f"CE v{N}-{CURRENT_VERSION}"
-# CE_VERSION_2 = f"CE v{N-1}-{PREVIOUS_VERSION}"
-CE_VERSION_2 = f"CE v{PREVIOUS_VERSION}"
-CE_VERSION_3 = f"CE v{CURRENT_BETA_VERSION}"
+CE_VERSION_2 = f"CE v{N}-{PREVIOUS_VERSION}"
+CE_VERSION_3 = f"CE {CURRENT_BETA_VERSION}"
 CORE_VERSION_1_TAG = (
     f"netskopetechnicalalliances/cloudexchange:core{N}-{CURRENT_VERSION}"
 )
 UI_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-{CURRENT_VERSION}"
-# CORE_VERSION_2_TAG = (
-#     f"netskopetechnicalalliances/cloudexchange:core{N-1}-{PREVIOUS_VERSION}"
-# )
-# UI_VERSION_2_TAG = (
-#     f"netskopetechnicalalliances/cloudexchange:ui{N-1}-{PREVIOUS_VERSION}"
-# )
 CORE_VERSION_2_TAG = (
-    f"crestsystems/cloudexchange:core-{CURRENT_BETA_VERSION}"
+    f"netskopetechnicalalliances/cloudexchange:core{N}-{PREVIOUS_VERSION}"
 )
 UI_VERSION_2_TAG = (
-    f"crestsystems/cloudexchange:ui-{CURRENT_BETA_VERSION}"
+    f"netskopetechnicalalliances/cloudexchange:ui{N}-{PREVIOUS_VERSION}"
 )
 CORE_VERSION_BETA_TAG = (
-    f"crestsystems/cloudexchange:core-{CURRENT_BETA_VERSION}"
+    f"netskopetechnicalalliances/cloudexchange:core-{CURRENT_BETA_VERSION}"
 )
 UI_VERSION_BETA_TAG = (
-    f"crestsystems/cloudexchange:ui-{CURRENT_BETA_VERSION}"
+   f"netskopetechnicalalliances/cloudexchange:ui-{CURRENT_BETA_VERSION}"
 )
 
 CORE_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
@@ -185,6 +178,32 @@ COMPOSE_VERSION = None
 HOST_OS = None
 should_ignore = False
 
+CE_VERSIONS_INPUT_DICT = {
+    CE_VERSION_1: {
+        "CORE_TAG": CORE_VERSION_1_TAG,
+        "UI_TAG": UI_VERSION_1_TAG,
+        "BETA_OPT_IN": "No",
+        "CORE_LATEST_VERSION_TAG": CORE_VERSION_1_LATEST_TAG,
+        "UI_LATEST_VERSION_TAG": UI_VERSION_1_LATEST_TAG,
+        "INSTALL_VERSION": CURRENT_VERSION,
+    },
+    CE_VERSION_2: {
+        "CORE_TAG": CORE_VERSION_2_TAG,
+        "UI_TAG": UI_VERSION_2_TAG,
+        "BETA_OPT_IN": "No",
+        "CORE_LATEST_VERSION_TAG": CORE_VERSION_2_LATEST_TAG,
+        "UI_LATEST_VERSION_TAG": UI_VERSION_2_LATEST_TAG,
+        "INSTALL_VERSION": PREVIOUS_VERSION,
+    },
+    CE_VERSION_3: {
+        "CORE_TAG": CORE_VERSION_BETA_TAG,
+        "UI_TAG": UI_VERSION_BETA_TAG,
+        "BETA_OPT_IN": "yes",
+        "CORE_LATEST_VERSION_TAG": CORE_VERSION_BETA_TAG,
+        "UI_LATEST_VERSION_TAG": UI_VERSION_BETA_TAG,
+        "INSTALL_VERSION": CURRENT_BETA_VERSION,
+    },
+}
 
 class Status(Enum):
     PASS = ("PASS",)
@@ -235,6 +254,44 @@ def compare_versions(version1, version2):
             return False
     return True
 
+def compare_ce_versions(v1, v2):
+    """
+    Compare two CE version strings.
+
+    The version string is in the format "A.B.C" or "A.B.C-beta.D.E". The function
+    first splits the string into main version and beta version. Then it compares
+    the main version first, and the beta version second. If the beta version is
+    not present, it is considered to be (0,).
+
+    Returns:
+        0 if the versions are equal
+        -1 if v1 is less than v2
+        1 if v1 is greater than v2
+    """
+    if not v1:
+        return -1
+    if not v2:
+        return 1
+    def version_to_tuple(version):
+        parts = version.split('-')
+        main_version = parts[0].split('.')
+        main_version = tuple(int(part) for part in main_version)
+        if len(parts) > 1:
+            beta_version = parts[1].split('.')
+            beta_version = tuple(int(part) for part in beta_version if part.isdigit())
+            return main_version + (0,) + beta_version
+        else:
+            return main_version + (1,)
+
+    v1_tuple = version_to_tuple(v1)
+    v2_tuple = version_to_tuple(v2)
+
+    if v1_tuple == v2_tuple:
+        return 0
+    elif v1_tuple < v2_tuple:
+        return -1
+    else:
+        return 1
 
 def _get_container_name(container_info):
     container_name = container_info.get("Names", "")
@@ -366,6 +423,8 @@ def get_secret_location(inputs):
 
 def put_env_variable(inputs, location=".env"):
     inputs = dict(inputs)
+    # Remove keys that are not in .env
+    inputs.pop("CURRENT_DATABASE_VERSION", None)
     if location != ".env":
         inputs.pop("HA_CURRENT_NODE", None)
         inputs.pop("HA_NFS_DATA_DIRECTORY", None)
@@ -505,6 +564,8 @@ def run_temp_mongo_container_for_migration(
 
 def get_all_existed_env_variable(location=".env", override=True):
     try:
+        if not os.path.exists(location):
+            return
         with open(location, "r") as f:
             if os.stat(location).st_size > 0:
                 with open(f"{location}.{int(time.time())}", "w+") as backup:
@@ -1010,26 +1071,34 @@ def set_ce_version_for_vm():
 
 def ask_for_ce_version():
     while True:
-        current_version = ""
-        if AVAILABLE_INPUTS.get("BETA_OPT_IN", "No").lower() in ["yes", "y"]:
-            current_version = CE_VERSION_3
-        elif CORE_VERSION_1_TAG == AVAILABLE_INPUTS.get("CORE_TAG", "").strip():
-            current_version = CE_VERSION_1
-        elif CORE_VERSION_2_TAG == AVAILABLE_INPUTS.get("CORE_TAG", "").strip():
-            current_version = CE_VERSION_2
-
+        current_version = AVAILABLE_INPUTS.get("CURRENT_DATABASE_VERSION", "").strip().strip("'").strip('"')
+        default_ce_version_options = [CE_VERSION_1, CE_VERSION_2, CE_VERSION_3]
+        ce_version_options = []
+        if compare_ce_versions(CURRENT_VERSION, current_version) >= 0:
+            ce_version_options.append(CE_VERSION_1)
+        if compare_ce_versions(PREVIOUS_VERSION, current_version) >= 0:
+            ce_version_options.append(CE_VERSION_2)
+        if compare_ce_versions(CURRENT_BETA_VERSION, current_version) >= 0:
+            ce_version_options.append(CE_VERSION_3)
+        if not ce_version_options:
+            ce_version_options = default_ce_version_options
+        version_selection_msg = ""
+        for i, ce_version in enumerate(ce_version_options):
+            version_selection_msg += f"\t {i+1}. {ce_version} \n"
         if current_version == "":
             print(
-                f"\nAvailable Netskope CE Versions\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n"
+                f"\nAvailable Netskope CE Versions\n{version_selection_msg}"
             )
         else:
             print(
-                f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n"
+                f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n{version_selection_msg}"
             )
-        n = input("Select the version you want to install (1/2/3): ")
+        number_of_versions = list(range(1, len(ce_version_options)+1))
+        number_of_versions_str = "/".join(str(x) for x in number_of_versions)
+        n = input(f"Select the version you want to install ({number_of_versions_str}): ")
         try:
             n = int(n)
-            if n not in [1, 2, 3]:
+            if n not in number_of_versions:
                 print(f"{n} is not a valid selection.")
                 continue
             break
@@ -1037,27 +1106,9 @@ def ask_for_ce_version():
             print(err)
             print(f"{n} is not a valid selection.")
             continue
-    if n == 1:
-        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_1_TAG
-        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_1_TAG
-        AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
-        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_1_LATEST_TAG
-        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_1_LATEST_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
-    elif n == 2:
-        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_2_TAG
-        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_2_TAG
-        AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
-        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_2_LATEST_TAG
-        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_2_LATEST_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = PREVIOUS_VERSION
-    elif n == 3:
-        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
-        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_BETA_VERSION
+
+    ce_version = ce_version_options[n-1]
+    AVAILABLE_INPUTS.update(CE_VERSIONS_INPUT_DICT[ce_version])
 
 
 def ask_for_initial_inputs():
@@ -2437,7 +2488,7 @@ def get_os_name_and_major_version():
                     if pretty_name and version_id:
                         break
             if "ubuntu" in pretty_name.lower():
-                if version_id.split(".")[0] in ["20", "18", "22"]:
+                if version_id.split(".")[0] in ["20", "22"]:
                     os_version = version_id.split(".")[0]
                 os_name = "Ubuntu"
                 allow = True
@@ -2452,10 +2503,10 @@ def get_os_name_and_major_version():
                 allow = True
         os_name_and_major_version = f"{os_name} {os_version}".strip()
         if os_name_and_major_version not in RECOMMENDED_HOST_OS and allow:
-            print_warning(f"WARNING: CE is not supported on {os_name_and_major_version}. Please switch to one of the supported OS. Supported OS: {RECOMMENDED_HOST_OS}")
+            print_warning(f"WARNING: CE is not supported on {pretty_name} version. Please switch to one of the supported version of OS. Supported OS: {RECOMMENDED_HOST_OS}")
         elif os_name_and_major_version not in RECOMMENDED_HOST_OS:
             print(
-                f"\033[1;31mCE is not supported on {pretty_name} please switch to one of the supported OS. Supported OS: {RECOMMENDED_HOST_OS} \033[0;37m"
+                f"\033[1;31mCE is not supported on {pretty_name}. Please switch to one of the supported OS. Supported OS: {RECOMMENDED_HOST_OS} \033[0;37m"
             )
             if not should_ignore:
                 exit(1)
@@ -2551,7 +2602,7 @@ def collect_host_platform_details():
 
 def collect_host_details():
     try:
-        print("\nChecking for host details, please wait for a few seconds...\n")
+        print("\nChecking for host details, please wait for a few seconds...")
         global HOST_OS, COMPOSE_VERSION, CONTAINERIZATION_PLATFORM
         HOST_OS = get_os_name_and_major_version()
         AVAILABLE_INPUTS["CE_AS_VM"] = str(ce_as_vm_check())
@@ -2610,6 +2661,7 @@ def run():
             get_all_existed_env_variable(
                 f"{location}/config/.env"
             )  # Get env variables from shared location
+            get_all_existed_env_variable(f"{location}/config/.env.ceversion")
 
             AVAILABLE_INPUTS["HA_NFS_DATA_DIRECTORY"] = location
             ask_for_ha_values(primary=False)
@@ -2619,6 +2671,9 @@ def run():
                 update_yaml_file("podman-compose")
         else:
             get_all_existed_env_variable()  # Get already exsting env variables
+            location = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY", "")
+            get_all_existed_env_variable(".env.ceversion")
+            get_all_existed_env_variable(f"{location}/config/.env.ceversion")
             if not ce_as_vm_check():
                 ask_for_ce_version()
             else:
@@ -2649,7 +2704,7 @@ def run():
                     "\033[1;31mIgnoring the failures... '--ignore-failures' flag applied.\033[0;37m"
                 )
             else:
-                exit()
+                exit(1)
 
         if Status.NOT_VERIFIED in CHECKS.values():
             shouldContinue = (
