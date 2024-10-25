@@ -1,0 +1,887 @@
+#!/usr/bin/env python3
+
+"""Migrate CE Script."""
+import atexit
+import ipaddress
+import os
+import re
+import subprocess
+from enum import Enum
+from getpass import getpass
+
+
+class Color(str, Enum):
+    """Color enum."""
+
+    PURPLE = '\033[95m'
+    CYAN = '\033[96m'
+    DARKCYAN = '\033[36m'
+    BLUE = '\033[94m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    END = '\033[0m'
+
+
+def validate_hostname(hostname):
+    """Validate hostname."""
+    if not re.match(r"^[a-zA-Z0-9.-]+$", hostname):
+        raise ValueError("Invalid hostname.")
+
+
+def validate_ip(ip):
+    """Validate IP."""
+    try:
+        ipaddress.ip_address(ip)
+    except ValueError:
+        raise ValueError("Invalid IP address.")
+
+
+def validate_path(path):
+    """Validate path."""
+    if not re.match(r"^[\w./-]+$", path) or not os.path.exists(path):
+        raise ValueError("Path does not exist or is invalid.")
+
+
+def print_warning(message):
+    """Print warning."""
+    print(f"\033[1;93m[!] \033[0;37m{message}")
+
+
+def print_fail(message):
+    """Print fail."""
+    print(f"\033[1;31m[F] \033[1;37m{message}\033[0;37m")
+
+
+def print_pass(message):
+    """Print pass."""
+    print(f"\033[0;32m[P] \033[0;37m{message}")
+
+
+def print_with_color(message, color: Color):
+    """Print with color."""
+    print(color + message + color.END)
+
+
+def run_ssh_scp(cmd, password, *args, print_output=True):
+    """Run ssh/scp command and return data."""
+    pid, fd = os.forkpty()
+    if pid == 0:  # child
+        os.execlp(cmd, *args)
+    data = None
+    success = False
+    while True:
+        try:
+            data = os.read(fd, 1024)
+        except OSError:
+            return data, True
+        if not data:
+            return data, success
+        data = data.decode().lower()
+        if "password:" in data:  # ssh prompt
+            password_input = f"{password}\n"
+            os.write(fd, password_input.encode())
+        elif "passphrase for key" in data:
+            passphrase_input = f"{password}\n"
+            os.write(fd, passphrase_input.encode())
+        elif "are you sure you want to continue" in data:
+            os.write(fd, b"yes\n")
+        if "permission denied" in data:
+            return data, False
+        elif "connection timed out" in data:
+            return data, False
+        elif "usage:" in data:
+            return data, False
+        elif "cannot create" in data:
+            return data, False
+        else:
+            if print_output:
+                print(data)
+
+
+backup_zip = "ce_backup.zip"
+backup_zip_path = os.path.abspath(backup_zip)
+remote_user = None
+remote_host = None
+remote_password = None
+remote_ce_dir = None
+auth_method = None
+ssh_auth = []
+sudo_remote_passwod = None
+shared_drive_path = None
+maintenance_password = None
+ce_as_a_vm_dest = False
+envs = None
+latest_version = "5.1.0"
+
+
+def read_env_file(file_path):
+    """Read .env file."""
+    pwds = {}
+    success = False
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            pwds = {
+                line.split("=")[0].strip(): line.split("=")[1].strip()
+                for line in f.readlines()
+                if line and line.split("=") and not line.startswith("#")
+            }
+            success = True
+    return success, pwds
+
+
+def load_env():
+    """Load environment variables."""
+    global envs
+    success, pwds = read_env_file(".env")
+    if not success:
+        print_fail(
+            "Could not load environment variables as no .env "
+            "file found. Exiting..."
+        )
+        exit(1)
+    envs = pwds
+    if envs and envs.get("LOCATION"):
+        success, pwds = read_env_file(envs["LOCATION"])
+        if not success:
+            print_fail(
+                "Could not load environment variables as no "
+                f"{envs['LOCATION']} file found. Exiting..."
+            )
+            exit(1)
+        envs = {**envs, **pwds}
+    if envs and envs.get("HA_NFS_DATA_DIRECTORY"):
+        file_path = f'{envs.get("HA_NFS_DATA_DIRECTORY")}/config/.env'
+        success, pwds = read_env_file(file_path)
+        if not success:
+            print_fail(
+                "Could not load environment variables as no "
+                f"{file_path} file found. Exiting..."
+            )
+            exit(1)
+        envs = {**envs, **pwds}
+
+
+def stop():
+    """Stop the CE."""
+    print_with_color(
+        f"{Color.BOLD}Running the stop script in old machine...",
+        Color.YELLOW
+    )
+    global remote_password
+    global remote_host
+    global remote_user
+    global ssh_auth
+    global remote_ce_dir
+    global sudo_remote_passwod
+    try:
+        output, success = run_ssh_scp(
+            "ssh",
+            remote_password,
+            "ssh",
+            *ssh_auth,
+            f"{remote_user}@{remote_host}",
+            f"cd {remote_ce_dir} && echo {sudo_remote_passwod} | sudo -S ./stop",
+            print_output=True
+        )
+        if not success:
+            print_warning(
+                "Unable to stop CE in old machine. "
+                "Got: {}".format(
+                    output.strip()
+                )
+            )
+            remote_ce_dir = None
+        print_pass("Stop script executed successfully in old machine.")
+    except Exception as error:
+        print_fail("Failed to stop the CE in old machine. Error: " + str(error))
+        exit(1)
+
+
+def run_setup():
+    """Stop the CE."""
+    print_with_color(
+        f"{Color.BOLD}Running the setup script...",
+        Color.YELLOW
+    )
+    try:
+        subprocess.run(["sudo", "./setup"], check=True)
+        print_pass("Setup script executed successfully.")
+    except Exception as error:
+        print_fail("Failed to run setup script. Error: " + str(error))
+        exit(1)
+
+
+def run_start():
+    """Stop the CE."""
+    print_with_color(
+        f"{Color.BOLD}Running the start script...",
+        Color.YELLOW
+    )
+    try:
+        subprocess.run(["sudo", "./start"], check=True)
+        print_pass("Start script executed successfully.")
+    except Exception as error:
+        print_fail("Failed to run start script. Error: " + str(error))
+        exit(1)
+
+
+def backup():
+    """Backup the CE folder."""
+    print_with_color(
+        f"{Color.BOLD}Zipping the backup files...",
+        Color.YELLOW
+    )
+    global remote_ce_dir
+    global remote_password
+    global remote_user
+    global remote_host
+    global ssh_auth
+    global sudo_remote_passwod
+    global shared_drive_path
+    try:
+        if int(option) == 3:
+            backup_folders_list = "mongo-data/* rabbitmq/data/*"
+            backup_shared_dir_folders = (
+                f"{os.path.join(shared_drive_path, 'plugins/*')} "
+                f"{os.path.join(shared_drive_path, 'repos/*')} "
+                f"{os.path.join(shared_drive_path, 'custom_plugins/*')}"
+            )
+        else:
+            backup_folders_list = "mongo-data/* rabbitmq/data/* plugins/* repos/* custom_plugins/*"
+        cmd = (
+            f"cd {os.path.join(remote_ce_dir, 'data/')} && "
+            f"echo {sudo_remote_passwod} | sudo -S zip -o -r ce_backup.zip {backup_folders_list}"
+        )
+        if int(option) == 3:
+            cmd += f" && cd {os.path.join(remote_ce_dir, 'data/')} && echo {sudo_remote_passwod} | sudo -S zip -r ce_backup.zip {backup_shared_dir_folders}"  # NOQA
+        output, success = run_ssh_scp(
+            "ssh",
+            remote_password,
+            "ssh",
+            *ssh_auth,
+            f"{remote_user}@{remote_host}",
+            cmd,
+            print_output=True
+        )
+        if not success:
+            print_warning(
+                "Unable to create backup with SSH credentials. "
+                "Got: {}".format(
+                    output.strip()
+                )
+            )
+            remote_ce_dir = None
+
+        print_pass(
+            "Backup files zipped successfully for CE."
+        )
+    except Exception as error:
+        print_fail("Failed to zip the backup files. Error: " + str(error))
+        exit(1)
+
+
+def check_for_ce_as_a_vm(user, host, password, auth_details):
+    """Check for CE as a VM."""
+    try:
+        output, _ = run_ssh_scp(
+            "ssh",
+            password,
+            "ssh",
+            *auth_details,
+            f"{user}@{host}",
+            "[ -f /.cloud_exchange_vm.marker ] && echo true || echo false",
+            print_output=False
+        )
+        if output.strip() == "true":
+            return True
+        else:
+            return False
+    except Exception:
+        return False
+
+
+def get_ssh_credentials():
+    """Get SSH credentials."""
+    global remote_user
+    global remote_host
+    global remote_password
+    global remote_ce_dir
+    global ce_as_a_vm_dest
+    global ssh_auth
+    global sudo_remote_passwod
+    try:
+        tried = 0
+        while not remote_user and tried < 3:
+            remote_user = input(
+                "Enter the old {} machine's username{}: ".format(
+                    "primary" if option == 3 else "standalone",
+                    f" ({3-tried} out of 3 tries remaining)"
+                    if tried > 0 else ""
+                )
+            ).strip()
+            if not remote_user:
+                print_warning(
+                    "Old machine's username cannot be empty."
+                )
+            tried += 1
+        if not remote_user:
+            raise ValueError(
+                "Invalid username provided after 3 tries. Exiting..."
+            )
+        tried = 0
+        while not remote_host and tried < 3:
+            remote_host = input(
+                "Enter the old {} machine's host IP or domain{}: ".format(
+                    "primary" if option == 3 else "standalone",
+                    f" ({3-tried} out of 3 tries remaining)"
+                    if tried > 0 else ""
+                )
+            ).strip()
+            try:
+                if re.match(r"^(\d{1,3}\.){3}\d{1,3}$", remote_host):
+                    validate_ip(remote_host)
+                else:
+                    validate_hostname(remote_host)
+            except ValueError as err:
+                remote_host = None
+                print_warning(str(err))
+            tried += 1
+        if not remote_host:
+            raise ValueError(
+                "Invalid hostname provided after 3 tries. Exiting..."
+            )
+        auth_method = None
+        tried = 0
+        while not auth_method and tried < 3:
+            try:
+                auth_method = (
+                    input(
+                        "Select authentication method for the SSH "
+                        "connection{}: \n"
+                        "1. pem\n"
+                        "2. password\n"
+                        "> "
+                        .format(
+                            f" ({3-tried} out of 3 tries remaining)"
+                            if tried > 0 else ""
+                        )
+                    )
+                    .strip()
+                    .lower()
+                )
+
+                ssh_auth = []
+                if auth_method in ["1", "pem"]:
+                    pem_file_path = input(
+                        "Enter the full path to your .pem file: "
+                    ).strip()
+                    validate_path(pem_file_path)
+                    remote_password = getpass(
+                        "Enter the password for your .pem file: "
+                        "[No Password: \"\"] "
+                    ).strip()
+                    if not remote_password:
+                        confirm = input(
+                            "You have entered an empty password. Are you sure"
+                            " that password is not required for .pem file? "
+                            "(y/n) [default: n]: "
+                        ).strip().lower()
+                        if confirm not in ['y', 'yes']:
+                            raise ValueError(
+                                "Password cannot be empty for .pem file."
+                            )
+                        else:
+                            remote_password = ""
+                    ssh_auth = ["-i", pem_file_path]
+                elif auth_method in ["2", "password"]:
+                    remote_password = getpass(
+                        f'Enter the old {"primary" if option == 3 else "standalone"} machine\'s password '
+                        f"for user {remote_user}: "
+                    ).strip()
+                    if not remote_password:
+                        raise ValueError(
+                            "Old machine's password cannot be empty."
+                        )
+                else:
+                    auth_method = None
+                    print_warning(
+                        "Invalid authentication way provided for SSH "
+                        "authentication. Valid authentication ways are "
+                        "'pem (1)' and 'password (2)'."
+                    )
+                output, _ = run_ssh_scp(
+                    "ssh",
+                    remote_password,
+                    "ssh",
+                    *ssh_auth,
+                    f"{remote_user}@{remote_host}",
+                    "echo true",
+                    print_output=False
+                )
+                if output.strip() != "true":
+                    raise ValueError(
+                        f"Authentication failed. Got: {output.strip()}\nExiting..."
+                    )
+            except ValueError as err:
+                auth_method = None
+                print_warning(str(err))
+            tried += 1
+        if not auth_method:
+            raise ValueError(
+                "Invalid authentication way provided after 3 tries. Exiting..."
+            )
+        tried = 0
+        is_ce_as_a_vm = check_for_ce_as_a_vm(remote_user, remote_host, remote_password, ssh_auth)
+        if is_ce_as_a_vm:
+            sudo_remote_passwod = remote_password
+        else:
+            sudo_remote_passwod = getpass(
+                f"Enter the sudo password for your user {remote_user} [default: user's ssh password]: "
+            ).strip()
+            if not sudo_remote_passwod or sudo_remote_passwod == "":
+                sudo_remote_passwod = remote_password
+        tried = 0
+        remote_ce_dir = None
+        while not remote_ce_dir and tried < 3:
+            if is_ce_as_a_vm:
+                remote_ce_dir = "/opt/cloudexchange/cloudexchange"
+            else:
+                remote_ce_dir = input(
+                    "Enter the path to the cloud exchange directory "
+                    "on the old {} machine{}: ".format(
+                        "primary" if option == 3 else "standalone",
+                        f" ({3-tried} out of 3 tries remaining)"
+                        if tried > 0 else ""
+                    )
+                ).strip().rstrip("/")
+            output, success = run_ssh_scp(
+                "ssh",
+                remote_password,
+                "ssh",
+                *ssh_auth,
+                f"{remote_user}@{remote_host}",
+                f"[ -d {remote_ce_dir} ] && echo true || echo false",
+                print_output=False
+            )
+            if not success:
+                print_warning(
+                    "Unable to connect with SSH credentials. "
+                    "Got: {}".format(
+                        output.strip()
+                    )
+                )
+                remote_ce_dir = None
+            elif output.strip() == "false":
+                print_warning(
+                    f"{remote_ce_dir} does not exist on the"
+                    " old machine."
+                )
+                remote_ce_dir = None
+            elif output.strip() != "true":
+                print_warning(
+                    f"Unable to check the path {remote_ce_dir} on the "
+                    f"old machine. Got: {output.strip()} "
+                )
+                remote_ce_dir = None
+            tried += 1
+        if not remote_ce_dir:
+            raise ValueError(
+                "Invalid destination path provided after 3 tries. "
+                "Exiting..."
+            )
+        if int(option) == 3:
+            print_with_color(
+                "Please enter the path to the mounted shared drive on the destination "
+                "machine. Which will be used in the HA deployment as a shared "
+                "storage.",
+                Color.BOLD
+            )
+            global shared_drive_path
+            tried = 0
+            shared_drive_path = None
+            while not shared_drive_path and tried < 3:
+                shared_drive_path = input(
+                    "Enter the path to the shared drive present at old primary machine{}: ".format(
+                        f" ({3-tried} out of 3 tries remaining)"
+                        if tried > 0 else ""
+                    )
+                ).strip().rstrip("/")
+                ssh_command = (
+                    ["ssh"]
+                    + ssh_auth
+                    + [
+                        f"{remote_user}@{remote_host}",
+                        f"[ -d {shared_drive_path} ] && echo true || echo false",
+                    ]
+                )
+                output, success = run_ssh_scp(
+                    "ssh",
+                    remote_password,
+                    *ssh_command,
+                    print_output=False
+                )
+                if not success:
+                    print_warning(
+                        "Unable to connect with SSH credentials. "
+                        "Got: {}\nExiting...".format(
+                            output.strip()
+                        )
+                    )
+                    exit(1)
+                elif output.strip() == "false":
+                    print_warning(
+                        f"{shared_drive_path} does not exist on the "
+                        "old primary machine."
+                    )
+                    shared_drive_path = None
+                elif output.strip() != "true":
+                    print_warning(
+                        f"Unable to check the path {shared_drive_path} on the "
+                        f"old primary machine. Got: {output.strip()} "
+                    )
+                    shared_drive_path = None
+                tried += 1
+            if not shared_drive_path:
+                raise ValueError(
+                    "Invalid path provided after 3 tries. Exiting..."
+                )
+        print_with_color(
+            "Succesfully collected SSH Credentials and Required information for old machine.",
+            Color.BOLD
+        )
+    except Exception as error:
+        print_fail(
+            "Failed to connect with SSH credentials. Error: " + str(error)
+        )
+        exit(1)
+
+
+def move_backup_files():
+    """Move backup files to remote location."""
+    print_with_color(
+        f"{Color.BOLD}Fetching backup data to current VM...",
+        Color.YELLOW
+    )
+    global remote_user
+    global remote_host
+    global remote_password
+    global remote_ce_dir
+    global ce_as_a_vm_dest
+    global ssh_auth
+    try:
+
+        remote_location = f"{remote_user}@{remote_host}:{os.path.join(remote_ce_dir, 'data/ce_backup.zip')}"
+
+        scp_command = ["scp"] + ssh_auth + [remote_location, "./data/"]
+        output, success = run_ssh_scp(
+            "scp",
+            remote_password,
+            *scp_command,
+            print_output=False
+        )
+        if not success:
+            print_warning(
+                "Unable to connect with SSH credentials. "
+                "Got: {}\nExiting...".format(
+                    output.strip()
+                )
+            )
+            exit(1)
+        print_with_color(
+            f"{Color.BOLD}Backup data received to the current VM successfully.",
+            Color.YELLOW
+        )
+
+        print_with_color(
+            f"{Color.BOLD}Unzipping backup on the current VM...",
+            Color.YELLOW
+        )
+        if int(option) == 1:
+            subprocess.run(
+                [
+                    "sudo", "unzip", "-o", "./data/ce_backup.zip", "-d", "./data/",
+                ],
+                check=True,
+            )
+        else:
+            print_with_color(
+                "Please enter the path to the mounted shared drive on the current "
+                "machine. Which will be used in the HA deployment as a shared "
+                "storage.",
+                Color.BOLD
+            )
+            shared_drive_path = None
+            tried = 0
+            while not shared_drive_path and tried < 3:
+                shared_drive_path = input("Enter the path here{}: ".format(
+                    f" ({3-tried} out of 3 tries remaining)"
+                    if tried > 0 else ""
+                )).strip().rstrip("/")
+                if not os.path.exists(shared_drive_path):
+                    print_warning(
+                        f"The specified path ('{shared_drive_path}') does not exist on this machine. "
+                        "Please enter a valid path for the shared storage."
+                    )
+                    shared_drive_path = None
+                tried += 1
+            subprocess.run(
+                [
+                    "sudo", "unzip", "-o", "./data/ce_backup.zip", "mongo-data/*", "rabbitmq/data/*", "-d", "./data/",
+                ],
+                check=True,
+            )
+            subprocess.run(
+                [
+                    "sudo",
+                    "unzip",
+                    "-o",
+                    "./data/ce_backup.zip",
+                    "plugins/*",
+                    "repos/*",
+                    "custom_plugins/*",
+                    "-d",
+                    shared_drive_path
+                ],
+                check=True,
+            )
+        print_pass(
+            "Backup unzipped successfully on the current VM.",
+        )
+    except Exception as error:
+        print_fail(
+            "Failed to send data to the destination VM. Error: " + str(error)
+        )
+        exit(1)
+
+
+def print_next_steps():
+    """Print the next steps."""
+    message = "All done."
+    if remaining_steps.get(int(option)):
+        message += " Now you can run the next steps manually."
+    print_pass(message)
+    for idx, step in enumerate(remaining_steps[int(option)]):
+        print_with_color(f"{idx+1}. {step}", Color.PURPLE)
+
+
+def print_pre_steps():
+    """Print the next steps."""
+    if int(option) in prerequisite_steps and len(prerequisite_steps[int(option)]) > 0:
+        print_warning(
+            f"{Color.RED}{Color.BOLD}Before proceeding to the next steps "
+            "please ensure that the following prerequisites steps have been"
+            f" performed: \n{Color.END}"
+        )
+        for idx, step in enumerate(prerequisite_steps[int(option)]):
+            print_with_color(f"{idx+1}. {step}", Color.DARKCYAN)
+        while True:
+            print_warning(
+                f"{Color.BOLD}Proceed for the next steps once "
+                "prerequisites are done."
+            )
+            confirm = input(
+                "Do you want to proceed with the next steps? "
+                "(y/n) [Default: '']: "
+            ).strip().lower()
+            if confirm in ["n", "no"]:
+                print_warning("Exiting...")
+                exit(1)
+            if confirm in ["y", "yes"]:
+                print_pass("Proceeding for the next steps...")
+                break
+            else:
+                print_fail("Invalid input. Please try again.")
+                continue
+
+
+def print_maintenance_password():
+    """Print the maintenance password."""
+    print_with_color(
+        f"{Color.BOLD}The maintenance password is: "
+        f"{Color.UNDERLINE}{Color.BOLD}{maintenance_password}{Color.END}\n"
+        f"{Color.DARKCYAN}Make sure to enter the above password "
+        "in the next steps.",
+        Color.DARKCYAN
+    )
+
+
+def reset_files():
+    """Reset the files."""
+    print_with_color(
+        "Resetting files...",
+        Color.YELLOW
+    )
+    try:
+        if os.path.exists(backup_zip_path):
+            print_with_color(
+                "Deleting backup files...",
+                Color.YELLOW
+            )
+            os.remove(backup_zip_path)
+            print_pass("Backup files deleted successfully.")
+    except Exception as error:
+        print_fail("Failed to delete backup files. Error: " + str(error))
+        exit(1)
+
+
+def on_exit(*args, **kwargs):
+    """On exit."""
+    message = (
+        "\nDuring the migration process, we may have stopped Cloud "
+        "Exchange on the old machine."
+        "\nPlease run the following command on the old machine to restart "
+        f"Cloud Exchange: {Color.BOLD}{Color.UNDERLINE}sudo ./start\n"
+    )
+    print_with_color(message, Color.RED)
+
+
+class Steps(Enum):
+    """Steps Enum."""
+
+    STOP = "stop"
+    RESET = "reset"
+    MOVE_BACKUP_FILES = "move_backup_files"
+    GET_SSH_CREDENTIALS = "get_ssh_credentials"
+    PRINT_NEXT_STEPS = "print_next_steps"
+    PRINT_PRE_STEPS = "print_pre_steps",
+    CREATE_BACKUP = "create_backup"
+    RUN_SETUP = "run_setup"
+    RUN_START = "run_start"
+
+
+steps_method_mapping = {
+    Steps.STOP: stop,
+    Steps.CREATE_BACKUP: backup,
+    Steps.RUN_SETUP: run_setup,
+    Steps.RUN_START: run_start,
+    Steps.MOVE_BACKUP_FILES: move_backup_files,
+    Steps.GET_SSH_CREDENTIALS: get_ssh_credentials,
+    Steps.PRINT_NEXT_STEPS: print_next_steps,
+    Steps.PRINT_PRE_STEPS: print_pre_steps,
+}
+
+prerequisite_steps = {
+    1: [
+        "Ensure that zip and unzip are installed on both the old and current machines.",
+        "Grab the MAITENANCE_PASSWORD password from old standalone setup. "
+        "This will be required during the installation of the new CE setup"
+        " (as the value for Maintenance Password)."
+        "If the maintenance password is lost, the data could not be retained."
+    ],
+    2: [
+        "Ensure that zip and unzip are installed on both the old and current machines.",
+        "Grab the MAITENANCE_PASSWORD password from old standalone setup. "
+        "This will be required during the installation of the new CE setup"
+        " (as the value for Maintenance Password)."
+        "If the maintenance password is lost, the data could not be retained."
+        "\nCurrent machine will be act as a primary node and shared drive (nfs or any other shared storage)"
+        "should be properly mounted with necessary read/write permissions in this machine."
+    ],
+    3: [
+        "Ensure that zip and unzip are installed on both the old and current machines.",
+        "Grab the MAITENANCE_PASSWORD password from old HA setup. "
+        "This will be required during the installation of the new CE setup"
+        " (as the value for Maintenance Password)."
+        "If the maintenance password is lost, the data could not be retained."
+        "\nMake sure to stop all secondary nodes and after that stop primary node as well. "
+        f"\nRun: {Color.BOLD}sudo ./stop"
+        "\nMake sure that primary instance is reachable along with SSH credentials.",
+        "\nCurrent machine will be act as a primary node and shared drive (nfs or any other shared storage)"
+        "should be properly mounted with necessary read/write permissions."
+    ]
+}
+
+remaining_steps = {
+    1: [
+    ],
+    2: [
+        "Run the setup script in the remaining secondary nodes."
+        f"\nWith: {Color.BOLD}sudo python3 ./setup --location "
+        "/path/to/mounted/directory",
+        "Run the start script in the primary node first and then run the start"
+        f" script for remaining machines as well.\nWith: {Color.BOLD}sudo ./start"
+    ],
+    3: [
+        "Run the setup script in the remaining secondary nodes."
+        f"\nWith: {Color.BOLD}sudo python3 ./setup --location "
+        "/path/to/mounted/directory",
+        "Run the start script in the primary node first and then run the start"
+        f" script for remaining machines as well.\nWith: {Color.BOLD}sudo ./start"
+    ]
+}
+
+
+options_steps_mapping = {
+    1: [
+        Steps.GET_SSH_CREDENTIALS,
+        Steps.STOP,
+        Steps.CREATE_BACKUP,
+        Steps.MOVE_BACKUP_FILES,
+        Steps.RUN_SETUP,
+        Steps.RUN_START
+    ],
+    2: [
+        Steps.GET_SSH_CREDENTIALS,
+        Steps.STOP,
+        Steps.CREATE_BACKUP,
+        Steps.MOVE_BACKUP_FILES,
+        Steps.RUN_SETUP,
+    ],
+    3: [
+        Steps.GET_SSH_CREDENTIALS,
+        Steps.STOP,
+        Steps.CREATE_BACKUP,
+        Steps.MOVE_BACKUP_FILES,
+        Steps.RUN_SETUP,
+    ]
+}
+
+if __name__ == "__main__":
+    atexit.register(on_exit)
+    # message = (
+    #     f"{Color.RED}{Color.BOLD}Note:- If you are proceeding for the "
+    #     "Standalone to HA or HA to HA migration, Please make sure "
+    #     "\n\t\tthat the shared drive is mounted on the destination machine"
+    #     " which will be used in the HA and\n\t\t make sure all the services"
+    #     " are up and running. Currently we do not support "
+    #     f"HA to Standalone migration.{Color.END}"
+    # )
+    # print_with_color(
+    #     f"""
+    #     {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
+
+    #     {message}
+
+    #     {Color.BOLD}Select the option:
+    #         1. Migrate to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone.
+    #         2. Migrate to v5.1.0 HA from v4.2.0 or v5.0.x Standalone.
+    #         3. Migrate to v5.1.0 HA from v5.0.0 or v5.0.1 HA
+    #     """,
+    #     Color.BOLD
+    # )
+    print_with_color(
+        f"""
+        {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
+
+        {Color.GREEN}{Color.BOLD}Migrating to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone (Containerised or CE as a VM).
+        """,
+        Color.BOLD
+    )
+    try:
+        # option = input("Enter the option number: ").strip()
+        option = "1"
+        if option not in [str(i) for i in list(range(1, 4))]:
+            print_fail("Invalid option.")
+            exit(1)
+        for step in (
+            [Steps.PRINT_PRE_STEPS]
+            + options_steps_mapping[int(option)]
+            + [Steps.PRINT_NEXT_STEPS]
+        ):
+            steps_method_mapping[step]()
+    except KeyboardInterrupt:
+        exit(1)
+    atexit.unregister(on_exit)

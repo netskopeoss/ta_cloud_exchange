@@ -76,20 +76,3 @@ if [ "$MIGRATE_MONGO" = "true" ]; then
     compose_command down -v
     echo "Successfully migrated Mongo data"
 fi
-
-MIGRATE_RABBITMQ=${MIGRATE_RABBITMQ:-true}
-if [ "$MIGRATE_RABBITMQ" = "true" ]; then
-    echo "Migrating RabbitMQ data"
-    sudo chown -R 1001:1001 data/rabbitmq
-    sudo chmod -R 744 data/rabbitmq
-    NUMBER_OF_RABBITMQ=$(sudo ls data/rabbitmq/data/ | grep "feature_flags" | wc -l) && [ $NUMBER_OF_RABBITMQ -eq 1 ] || (echo "Multiple RabbitMQ data found; please remove old RabbitMQ data folders and run this script again." && sudo ls -ld data/rabbitmq/data/rabbit* && exit 1)
-    OLD_RABBITMQ_NAME=$(sudo ls data/rabbitmq/data/ | grep "feature_flags" | sed -e 's/-feature_flags//g')
-    sudo $container_command run --rm -v ./data/rabbitmq/custom.conf:/etc/rabbitmq/conf.d/custom.conf:z -v ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z -u 1001:1001 -e RABBITMQ_NODENAME="$OLD_RABBITMQ_NAME" -e OLD_RABBITMQ_NAME=$OLD_RABBITMQ_NAME -e RABBITMQ_USE_LONGNAME=true -e HA_PRIMARY_NODE_IP=$HA_PRIMARY_NODE_IP -e RABBITMQ_DEFAULT_USER=user -e RABBITMQ_DEFAULT_PASS=${MAINTENANCE_PASSWORD} index.docker.io/rabbitmq:3.12.10-management /bin/bash -c "echo 'migrate-rabbit-mq' > /var/lib/rabbitmq/.erlang.cookie \
-    && chmod 600 /var/lib/rabbitmq/.erlang.cookie \
-    && rabbitmqctl rename_cluster_node ${OLD_RABBITMQ_NAME} rabbit@${HA_PRIMARY_NODE_IP} \
-    && mv /var/lib/rabbitmq/mnesia/${OLD_RABBITMQ_NAME} /var/lib/rabbitmq/mnesia/rabbit\@${HA_PRIMARY_NODE_IP} \
-    && mv /var/lib/rabbitmq/mnesia/${OLD_RABBITMQ_NAME}-feature_flags /var/lib/rabbitmq/mnesia/rabbit\@${HA_PRIMARY_NODE_IP}-feature_flags \
-    && mv /var/lib/rabbitmq/mnesia/${OLD_RABBITMQ_NAME}-plugins-expand /var/lib/rabbitmq/mnesia/rabbit\@${HA_PRIMARY_NODE_IP}-plugins-expand \
-    && mv /var/lib/rabbitmq/mnesia/${OLD_RABBITMQ_NAME}-rename /var/lib/rabbitmq/mnesia/rabbit\@${HA_PRIMARY_NODE_IP}-rename"
-    echo "Successfully migrated RabbitMQ data"
-fi
