@@ -1,10 +1,14 @@
 #!/bin/sh
 
-. ./.env
+. ./.env || (echo "Please run setup first" && exit 1)
+
 if [ -n "${HA_NFS_DATA_DIRECTORY}" ]; then
-    . ${HA_NFS_DATA_DIRECTORY}/config/.env
+    . ${HA_NFS_DATA_DIRECTORY}/config/.env &> /dev/null
 fi
 
+([ -n "${HA_NFS_DATA_DIRECTORY}" ] && [ -n "$HA_PRIMARY_NODE_IP" ] && [ -n "$HA_IP_LIST" ]) || (echo "Please configure HA parameters in setup." && exit 1)
+
+. ${LOCATION} &> /dev/null
 if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1 ]; then  
     if [ `grep -c "7.9" /etc/redhat-release` -ge 1 ]; then
         docker compose version &> /dev/null
@@ -12,6 +16,7 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
             echo "Could not find docker compose"
             exit 1;
         else
+            container_command=docker
             if [ -z "${HA_IP_LIST}" ]; then
                 alias compose_command="docker compose -f docker-compose.yml"
             else
@@ -24,6 +29,7 @@ if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1
             echo "Could not find podman-compose"
             exit 1;
         else
+            container_command=podman
             if [ -z "${HA_IP_LIST}" ]; then
                 alias compose_command="podman-compose -f podman-compose.yml"
             else
@@ -39,6 +45,7 @@ else
             echo "Could not find docker compose or podman-compose"
             exit 1;
         else
+            container_command=podman
             if [ -z "${HA_IP_LIST}" ]; then
                 alias compose_command="podman-compose -f podman-compose.yml"
             else
@@ -46,6 +53,7 @@ else
             fi
         fi
     else
+        container_command=docker
         if [ -z "${HA_IP_LIST}" ]; then
             alias compose_command="docker compose -f docker-compose.yml"
         else
@@ -54,20 +62,17 @@ else
     fi
 fi
 
-if [ -n "${HA_IP_LIST}" ]; then
-    ./replica_set --remove
+set -e
 
-    RETURN=$?
-    if [ $RETURN -eq 0 ]; then
-        compose_command exec -- rabbitmq-stats rabbitmq-queues delete_member cloudexchange_9 rabbit@$HA_CURRENT_NODE
-        compose_command exec -- rabbitmq-stats rabbitmq-queues delete_member cloudexchange_6 rabbit@$HA_CURRENT_NODE
-        compose_command exec -- rabbitmq-stats rabbitmq-queues delete_member cloudexchange_3 rabbit@$HA_CURRENT_NODE
-
-        compose_command exec -- rabbitmq-stats rabbitmqctl stop_app
-        compose_command exec -- rabbitmq-stats rabbitmqctl reset
-    elif [ $RETURN -eq 1 ]; then
-        exit 0
-    fi
+MIGRATE_MONGO=${MIGRATE_MONGO:-true}
+if [ "$MIGRATE_MONGO" = "true" ]; then
+    echo "Migrating Mongo data"
+    sudo chown -R 999:999 data/mongo-data
+    sudo chmod -R 744 data/mongo-data
+    compose_command up mongodb-primary -d
+    sleep 5
+    compose_command exec mongodb-primary bash -c "mongosh -u root -p \$MONGO_INITDB_ROOT_PASSWORD --eval 'cfg = rs.conf();cfg.members[0].host = \"$HA_PRIMARY_NODE_IP:27017\";rs.reconfig(cfg, { force: true })'"
+    sleep 5
+    compose_command down -v
+    echo "Successfully migrated Mongo data"
 fi
-
-compose_command down -v

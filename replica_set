@@ -52,13 +52,15 @@ def create_replica_set(connection_string):
 
         print("Validating if replica set is already initialized...")
         retry_count = 0
+        is_replica_set_initialized = False
         while retry_count < REPLICA_SET_INITIALIZE_RETRY_COUNT:
             retry_count += 1
             try:
                 replica_status = client.admin.command("replSetGetStatus")
                 if replica_status.get("ok") == 1.0:
                     print("The MongoDB Replica set is already initialized.")
-                    exit(1)
+                    is_replica_set_initialized = True
+                    break
             except ServerSelectionTimeoutError as ex:
                 if retry_count == REPLICA_SET_INITIALIZE_RETRY_COUNT:
                     raise ex
@@ -67,10 +69,10 @@ def create_replica_set(connection_string):
                 if 'NotYetInitialized' in str(error):
                     break
                 raise error
-
-        print("Initializing MongoDB replica set...")
+        if not is_replica_set_initialized:
+            print("Initializing MongoDB replica set...")
         retry_count = 0
-        while retry_count < REPLICA_SET_INITIALIZE_RETRY_COUNT:
+        while not is_replica_set_initialized and retry_count < REPLICA_SET_INITIALIZE_RETRY_COUNT:
             retry_count += 1
             try:
                 _ = client.admin.command("replSetInitiate", config)
@@ -79,13 +81,15 @@ def create_replica_set(connection_string):
                 if retry_count == REPLICA_SET_INITIALIZE_RETRY_COUNT:
                     raise ex
                 time.sleep(30)
-        print("Replica set initialized.")
+
+        if not is_replica_set_initialized:
+            print("Replica set initialized.")
 
         retry = 30
         wait_time = 30
         settings_found = False
         while True:
-            print("Waiting for migrations to be completed...")
+            print("Validating the database version...")
             time.sleep(5)
             response = client.cte["settings"].find_one({})
             if not response:
@@ -100,8 +104,8 @@ def create_replica_set(connection_string):
                 print("Settings collection found in database.")
                 settings_found = True
             db_version = dict(response).get("databaseVersion", "")
-            if db_version == os.environ["INSTALL_VERSION"]:
-                print("Migrations completed.")
+            if db_version == os.environ["CURRENT_DATABASE_VERSION"]:
+                print(f"The database version {db_version} is correct.")
                 if isRedHat():
                     print("Execute this command in remaining nodes to form a cluster:\n  > sudo ./start")
                 else:

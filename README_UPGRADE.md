@@ -4,10 +4,10 @@
   - `cd netskope/ta_cloud_exchange`
 
 2. Shutdown existing Cloud Exchange 2 instance
-  - `docker-compose stop`
+  - `docker compose stop`
 
 3. Remove existing container definitions NOTE: this does NOT remove your data
-  - `docker-compose rm`
+  - `docker compose rm`
   - Yes you want to delete
 
 4. Make backup of your Cloud Exchange database
@@ -39,6 +39,6 @@
 
 If you issue sudo ./start and you are presented with a help screen.
 
-- Please download a newer version of docker-compose from:
+- Please download a newer version of docker compose from:
 https://docs.docker.com/compose/install/
  
