@@ -5,7 +5,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 ## Prerequisites
 
 - Currently, CE is not supported on macOS.
-- Linux System capable of supporting docker.io release of docker, and docker-compose
+- Linux System capable of supporting docker.io release of docker, and docker compose
 - Python 3.8.x
 - Zip (For the diagnose script)
 - Minimum Requirements:
@@ -14,7 +14,7 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
   - 80 GB of storage
 - Please see the full [documentation](https://docs.netskope.com/en/netskope-help/integrations-439794/netskope-cloud-exchange/about-cloud-exchange/cloud-exchange-system-requirements) for scale numbers.
 - Use latest docker version (https://docs.docker.com/engine/install/centos/)
-- Use latest docker-compose version (https://docs.docker.com/compose/install/other/#install-compose-standalone)
+- Use latest docker compose version (https://docs.docker.com/compose/install)
 
 ## Install Procedure for standalone deployment
 
@@ -40,8 +40,8 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 
 1. If you issue sudo ./start and you are presented with a help screen.
 
-   - Please download a newer version of docker-compose from:
-     https://docs.docker.com/compose/install/other/#install-compose-standalone
+   - Please download a newer version of docker compose from:
+     https://docs.docker.com/compose/install
 
 2. If bad gateway is received when you try to login:
 

@@ -23,6 +23,7 @@ import sys
 import random
 import string
 import readline
+from urllib.parse import urlparse
 
 SECRET_FILE_NAME = ".env.keys"
 DEFAULT_INPUTS = {
@@ -86,52 +87,82 @@ DEFAULT_INPUTS = {
     "RABBITMQ_COOKIE": {"default": "", "skip": True, "help": ""},
     "LOCATION": {"default": "", "skip": True, "help": ""},
     "COMPOSE_HTTP_TIMEOUT": {"default": 600, "skip": True, "help": ""},
+    "CE_AS_VM": {"default": "False", "skip": True, "help": ""},
+    "HA_ENABLED": {"default": "False", "skip": True, "help": ""},
+    "CONTAINERIZATION_PLATFORM": {"default": "", "skip": True, "help": ""},
+    "COMPOSE_VERSION": {"default": "", "skip": True, "help": ""},
+    "HOST_OS": {"default": "", "skip": True, "help": ""},
+    "PLATFORM_PROVIDER": {"default": "unknown", "skip": True, "help": ""},
+    "PROMOTION_BANNERS_FILE_LOCATION": {
+        "default": "https://raw.githubusercontent.com/netskopeoss/ta_cloud_exchange/main/ce_promotions.json",
+        "skip": True,
+        "help": ""
+    },
 }
 
 AVAILABLE_INPUTS = {}
 CHECKS = {}
 
-MIN_CPU = 2
-MIN_MEM_KB = 3500000
-MIN_DISK_BYTES = 20000000000
+MIN_CPU = 8
+MIN_MEM_KB = 0.90 * 16 * 1024**2 # 90% of 16 GB
+MEDIUM_PROFILE_REQUIREMENTS = [8, 16, 80, 20] # CPU, Memory (in GB), Disk (in GB), Free Disk (in GB)
+LARGE_PROFILE_REQUIREMENTS = [16, 32, 120, 20] # CPU, Memory (in GB), Disk (in GB), Free Disk (in GB)
+CE_PROFILING = {
+    MEDIUM_PROFILE_REQUIREMENTS[0] : {
+        "name": "Medium",
+        "memory": MEDIUM_PROFILE_REQUIREMENTS[1], # in GB
+        "min_memory": MEDIUM_PROFILE_REQUIREMENTS[1] * 0.90 * 1024**2, # 90% of 16 GB
+        "min_disk_bytes": MEDIUM_PROFILE_REQUIREMENTS[2] * 0.90 * 1024**3 # 90% of 80 GB
+    },
+    LARGE_PROFILE_REQUIREMENTS[0] : {
+        "name": "Large",
+        "memory": LARGE_PROFILE_REQUIREMENTS[1], # in GB
+        "min_memory": LARGE_PROFILE_REQUIREMENTS[1] * 0.90 * 1024**2, # 90% of 32 GB
+        "min_disk_bytes": LARGE_PROFILE_REQUIREMENTS[2] * 0.90 * 1024**3 # 90% of 120 GB
+    }
+}
+MIN_DISK_BYTES = 0.90 * 80 * 1024**3 # 90% of 80 GB
+MIN_FREE_DISK_BYTES = 20*1024**3
 MIN_DOCKER_VERSION = "19.0.0"
-MIN_DOCKER_COMPOSE_VERSION = "1.29.0"
+MIN_DOCKER_COMPOSE_VERSION = "2.16.0"
 MIN_PODMAN_VERSION = "3.4.2"
 MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 
 N = 5
-CURRENT_VERSION = "5.0.1"
-PREVIOUS_VERSION = "4.2.0"
-CURRENT_BETA_VERSION = "5.0.1"
+MIN_HA_SUPPORTED_VERSION = "5.0.0"
+CURRENT_VERSION = "5.1.0"
+PREVIOUS_VERSION = "5.0.1"
+CURRENT_BETA_VERSION = "5.1.0-beta"
 CE_VERSION_1 = f"CE v{N}-{CURRENT_VERSION}"
-CE_VERSION_2 = f"CE v{N-1}-{PREVIOUS_VERSION}"
-CE_VERSION_3 = f"CE {CURRENT_BETA_VERSION}-beta"
+CE_VERSION_2 = f"CE v{N}-{PREVIOUS_VERSION}"
+CE_VERSION_3 = f"CE {CURRENT_BETA_VERSION}"
 CORE_VERSION_1_TAG = (
     f"netskopetechnicalalliances/cloudexchange:core{N}-{CURRENT_VERSION}"
 )
 UI_VERSION_1_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-{CURRENT_VERSION}"
 CORE_VERSION_2_TAG = (
-    f"netskopetechnicalalliances/cloudexchange:core{N-1}-{PREVIOUS_VERSION}"
+    f"netskopetechnicalalliances/cloudexchange:core{N}-{PREVIOUS_VERSION}"
 )
 UI_VERSION_2_TAG = (
-    f"netskopetechnicalalliances/cloudexchange:ui{N-1}-{PREVIOUS_VERSION}"
+    f"netskopetechnicalalliances/cloudexchange:ui{N}-{PREVIOUS_VERSION}"
 )
 CORE_VERSION_BETA_TAG = (
-    f"netskopetechnicalalliances/cloudexchange:core-{CURRENT_BETA_VERSION}-beta"
+    f"netskopetechnicalalliances/cloudexchange:core-{CURRENT_BETA_VERSION}"
 )
 UI_VERSION_BETA_TAG = (
-    f"netskopetechnicalalliances/cloudexchange:ui-{CURRENT_BETA_VERSION}-beta"
+   f"netskopetechnicalalliances/cloudexchange:ui-{CURRENT_BETA_VERSION}"
 )
 
 CORE_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
 UI_VERSION_1_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
-CORE_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N-1}-latest"
-UI_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N-1}-latest"
+CORE_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:core{N}-latest"
+UI_VERSION_2_LATEST_TAG = f"netskopetechnicalalliances/cloudexchange:ui{N}-latest"
 
 RECOMMENDED_DOCKER_VERSION = "25.0.3"
-RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.24.6"
+RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.27.0"
 RECOMMENDED_PODMAN_VERSION = "4.6.1"
 RECOMMENDED_PODMAN_COMPOSE_VERSION = "1.0.6"
+RECOMMENDED_HOST_OS = ["Ubuntu 20", "Ubuntu 22", "RHEL 8", "RHEL 9"]
 
 GIT_PLUGIN_REPO = "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
 
@@ -142,7 +173,37 @@ is_ui_running = False
 is_rabbitmq_running = False
 is_mongodb_running = False
 is_ha = False
+CONTAINERIZATION_PLATFORM = None
+COMPOSE_VERSION = None
+HOST_OS = None
+should_ignore = False
 
+CE_VERSIONS_INPUT_DICT = {
+    CE_VERSION_1: {
+        "CORE_TAG": CORE_VERSION_1_TAG,
+        "UI_TAG": UI_VERSION_1_TAG,
+        "BETA_OPT_IN": "No",
+        "CORE_LATEST_VERSION_TAG": CORE_VERSION_1_LATEST_TAG,
+        "UI_LATEST_VERSION_TAG": UI_VERSION_1_LATEST_TAG,
+        "INSTALL_VERSION": CURRENT_VERSION,
+    },
+    CE_VERSION_2: {
+        "CORE_TAG": CORE_VERSION_2_TAG,
+        "UI_TAG": UI_VERSION_2_TAG,
+        "BETA_OPT_IN": "No",
+        "CORE_LATEST_VERSION_TAG": CORE_VERSION_2_LATEST_TAG,
+        "UI_LATEST_VERSION_TAG": UI_VERSION_2_LATEST_TAG,
+        "INSTALL_VERSION": PREVIOUS_VERSION,
+    },
+    CE_VERSION_3: {
+        "CORE_TAG": CORE_VERSION_BETA_TAG,
+        "UI_TAG": UI_VERSION_BETA_TAG,
+        "BETA_OPT_IN": "yes",
+        "CORE_LATEST_VERSION_TAG": CORE_VERSION_BETA_TAG,
+        "UI_LATEST_VERSION_TAG": UI_VERSION_BETA_TAG,
+        "INSTALL_VERSION": CURRENT_BETA_VERSION,
+    },
+}
 
 class Status(Enum):
     PASS = ("PASS",)
@@ -193,6 +254,44 @@ def compare_versions(version1, version2):
             return False
     return True
 
+def compare_ce_versions(v1, v2):
+    """
+    Compare two CE version strings.
+
+    The version string is in the format "A.B.C" or "A.B.C-beta.D.E". The function
+    first splits the string into main version and beta version. Then it compares
+    the main version first, and the beta version second. If the beta version is
+    not present, it is considered to be (0,).
+
+    Returns:
+        0 if the versions are equal
+        -1 if v1 is less than v2
+        1 if v1 is greater than v2
+    """
+    if not v1:
+        return -1
+    if not v2:
+        return 1
+    def version_to_tuple(version):
+        parts = version.split('-')
+        main_version = parts[0].split('.')
+        main_version = tuple(int(part) for part in main_version)
+        if len(parts) > 1:
+            beta_version = parts[1].split('.')
+            beta_version = tuple(int(part) for part in beta_version if part.isdigit())
+            return main_version + (0,) + beta_version
+        else:
+            return main_version + (1,)
+
+    v1_tuple = version_to_tuple(v1)
+    v2_tuple = version_to_tuple(v2)
+
+    if v1_tuple == v2_tuple:
+        return 0
+    elif v1_tuple < v2_tuple:
+        return -1
+    else:
+        return 1
 
 def _get_container_name(container_info):
     container_name = container_info.get("Names", "")
@@ -324,6 +423,8 @@ def get_secret_location(inputs):
 
 def put_env_variable(inputs, location=".env"):
     inputs = dict(inputs)
+    # Remove keys that are not in .env
+    inputs.pop("CURRENT_DATABASE_VERSION", None)
     if location != ".env":
         inputs.pop("HA_CURRENT_NODE", None)
         inputs.pop("HA_NFS_DATA_DIRECTORY", None)
@@ -366,35 +467,20 @@ def create_env_if_not_exist(location=".env"):
         raise Exception(f"Error occurred while creating file: {e}")
 
 
-def execute_shell_command(command):
+def execute_shell_command(command, **kwargs):
     """Function to exectute shell command using python script."""
     p = None
     try:
-        p = subprocess.check_output(command, shell=True)
+        p = subprocess.check_output(command, shell=True, **kwargs)
+        return p
     except Exception as e:
         if p:
             p.kill()
         raise Exception(f"Error occurred while executing command. Error: {e}")
 
 
-def run_temp_mongo_container_for_migration(
-    maintenance_password, http_proxy, https_proxy
-):
-    """Migrate mongo data by running temp mongo container and update featurecompatibilityversion variable from mongo."""
-    deployment = None
-    MONGO_MIGRATE_IMAGE = "mongo:5.0.21"
-    temp_mongo_container_name = "mongo-migration"
-
-    if isRedHat():
-        deployment = "podman"
-    else:
-        deployment = "docker"
-
-    # If from previous temp container is still running then kill that container and start again.
-    remove_container = f"{deployment} rm -f {temp_mongo_container_name} >/dev/null 2>&1"
-    execute_shell_command(remove_container)
-    time.sleep(5)
-
+def create_mongo_container(deployment, maintenance_password, http_proxy, https_proxy, temp_container_name, image_name):
+    """Create MongoDB container."""
     create_container = f"{deployment} run -d -t -e MONGODB_ADVERTISED_HOSTNAME=mongodb-primary \
                         -e MONGO_INITDB_ROOT_USERNAME=root \
                         -e MONGO_INITDB_ROOT_PASSWORD={maintenance_password} \
@@ -404,24 +490,82 @@ def run_temp_mongo_container_for_migration(
                         -e HTTP_PROXY=${http_proxy} \
                         -e HTTPS_PROXY=${https_proxy} \
                         -v ./data/mongo-data/data/db:/data/db:z \
-                        --name {temp_mongo_container_name} \
-                        index.docker.io/{MONGO_MIGRATE_IMAGE} >/dev/null 2>&1"
+                        --name {temp_container_name} \
+                        index.docker.io/{image_name} >/dev/null 2>&1"
     execute_shell_command(create_container)
-    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
 
-    eval_command = """'db.adminCommand({setFeatureCompatibilityVersion: "5.0"})'"""
-    compatibility_command = f"{deployment} exec {temp_mongo_container_name} mongo -u root --password {maintenance_password} admin --eval {eval_command}"
-    execute_shell_command(compatibility_command)
 
-    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+def remove_mongo_contianer(deployment, temp_mongo_container_name):
+    """Remove mongodb contianer."""
     remove_container = f"{deployment} rm -f {temp_mongo_container_name} >/dev/null 2>&1"
     execute_shell_command(remove_container)
+    time.sleep(5)
+
+
+def execute_mongodb_command(deployment, temp_mongo_container_name, shell, maintenance_password, eval_command, **kwargs):
+    """Execute command inside mongodb contianer."""
+    compatibility_command = f"{deployment} exec {temp_mongo_container_name} {shell} -u root --password {maintenance_password} admin --eval {eval_command}"
+    execute_shell_command(compatibility_command, **kwargs)
+
+
+def run_temp_mongo_container_for_migration(
+    maintenance_password, http_proxy, https_proxy
+):
+    """Migrate mongo data by running temp mongo container and update featurecompatibilityversion variable from mongo."""
+    deployment = None
+    MONGO_MIGRATE_IMAGE = "mongo:5.0.21"
+    MONGO_CURRENT_IMAGE = "mongo:6.0.12"
+    temp_mongo_container_name = "mongo-migration"
+
+    if isRedHat():
+        deployment = "podman"
+    else:
+        deployment = "docker"
+
+    # If from previous temp container is still running then kill that container and start again.
+    remove_mongo_contianer(deployment, temp_mongo_container_name)
+
+    # create mongo contianer
+    create_mongo_container(
+        deployment,
+        maintenance_password,
+        http_proxy,
+        https_proxy,
+        temp_mongo_container_name,
+        MONGO_MIGRATE_IMAGE
+    )
+    try:
+        time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+        eval_command = """'db.adminCommand({setFeatureCompatibilityVersion: "5.0"})'"""
+        execute_mongodb_command(deployment, temp_mongo_container_name, "mongo", maintenance_password, eval_command, stderr=subprocess.PIPE)
+    except Exception:
+        # remove above container
+        time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+        remove_mongo_contianer(deployment, temp_mongo_container_name)
+        # spin latest mongo version to check compatibility
+        create_mongo_container(
+            deployment,
+            maintenance_password,
+            http_proxy,
+            https_proxy,
+            temp_mongo_container_name,
+            MONGO_CURRENT_IMAGE
+        )
+
+        time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+        eval_command = """'db.adminCommand({getParameter: 1, featureCompatibilityVersion: 1})'"""
+        execute_mongodb_command(deployment, temp_mongo_container_name, "mongosh", maintenance_password, eval_command)
+
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    remove_mongo_contianer(deployment, temp_mongo_container_name)
 
     print_pass("The migration of database has been successfully completed.")
 
 
 def get_all_existed_env_variable(location=".env", override=True):
     try:
+        if not os.path.exists(location):
+            return
         with open(location, "r") as f:
             if os.stat(location).st_size > 0:
                 with open(f"{location}.{int(time.time())}", "w+") as backup:
@@ -512,102 +656,224 @@ def create_self_signed_ssl_certs():
             f"Error occurred while generating self-signed ssl certificates. Error: {e}"
         )
 
+def check_port_for_ha(ip, port, timeout=3):
+    """
+    Check if a specific port on a given IP is reachable.
+    
+    Args:
+    ip (str): The IP address to check.
+    port (int): The port number to check.
+    timeout (int): Timeout for the connection attempt in seconds.
+    
+    Returns:
+    tuple: A tuple containing the following elements:
+    - is_port_open (bool): True if the port is open, False otherwise.
+    - is_service_running (bool): True if the service is running, False otherwise.
+    """
+    # Create a socket object
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    is_port_open = False
+    is_service_running = False
+    try:
+        # Try to connect to the given IP and port
+        sock.connect((ip, port))
+        try:
+            # Try to send some data to see if the service responds
+            sock.sendall(b'Hello')
+            data = sock.recv(1024)
+            if data:
+                is_port_open = True
+                is_service_running = True
+            else:
+                is_port_open = True
+                is_service_running = False
+        except socket.error:
+            is_port_open = True
+            is_service_running = False
+    except socket.timeout:
+        is_port_open = False
+        is_service_running = False
+    except socket.error as e:
+        if e.errno == 111:  # Connection refused
+            is_port_open = True
+            is_service_running = False
+        else:
+            is_port_open = False
+            is_service_running = False
+    finally:
+        sock.close()
+    return is_port_open, is_service_running
+
+def check_for_ha_ports():
+    try:
+        port_flag = True
+        for port in [4369, 5672, 15672, 25672, 35672]:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(("127.0.0.1", port))
+            if result == 0:
+                if is_rabbitmq_running:
+                    print_warning("RabbitMQ container is already running.")
+                    break
+                else:
+                    print_fail(f"Port {port} is already in use.")
+                    port_flag = False
+            else:
+                print_pass(f"Port {port} is available.")
+
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        result = sock.connect_ex(("127.0.0.1", 27017))
+        if result == 0:
+            if is_mongodb_running:
+                print_warning("MongoDB container is already running.")
+            else:
+                print_fail(f"Port 27017 is already in use.")
+                port_flag = False
+        else:
+            print_pass(f"Port 27017 is available.")
+
+        CHECKS["Port Check"] = Status.PASS if port_flag else Status.FAIL
+    except Exception as e:
+        # print(e)
+        print_warning(f"Could not verify Port information of the machine")
+        CHECKS["Port Check"] = Status.NOT_VERIFIED
+    port_error_msg = False
+    for host in AVAILABLE_INPUTS.get("HA_IP_LIST", "").split(","):
+        if host != AVAILABLE_INPUTS.get("HA_CURRENT_NODE"):
+            for port in [4369, 5672, 15672, 25672, 35672, 27017]:
+                is_port_open, _ = check_port_for_ha(host, port)
+                if not is_port_open:
+                    print_fail(f"Port {port} of {host} is not reachable from {AVAILABLE_INPUTS.get('HA_CURRENT_NODE')}")
+                    port_error_msg = True
+                else:
+                    print_pass(f"Port {port} of {host} is reachable from {AVAILABLE_INPUTS.get('HA_CURRENT_NODE')}")
+    if port_error_msg:
+        print(
+            "\033[1;31mPlease ensure all HA nodes are reachable from each other.\033[0;37m"
+        )
+        CHECKS["Port Check"] = Status.FAIL
+
+def print_sizing_table(actual):
+    """Print the sizing table."""
+    metrics = ["Cores", "RAM (GB)", "Disk Space (GB)", "Free Space (GB)"]
+    print("+-----------------+---------------+-----------------+-----------------+")
+    print(f"| {'Metric':<15} | {'Current':<13} | {'Medium Profile':<15} | {'Large Profile':<15} |")
+    print("+-----------------+---------------+-----------------+-----------------+")
+    
+    # Print the data rows
+    for i in range(len(metrics)):
+        print(f"| {metrics[i]:<15} | {str(actual[i]):<13} | {str(MEDIUM_PROFILE_REQUIREMENTS[i]):<15} | {str(LARGE_PROFILE_REQUIREMENTS[i]):<15} |")
+        print("+-----------------+---------------+-----------------+-----------------+")
+
 
 def check_machine_specs():
     print("\nVerifying minimum system requirements...")
     print(
-        '\033[1;37mNOTE: The actual system requirements depend on several criteria including data volume, # of plugins among others.\nIt is highly recommended to refer to the System Requirements section of the "User Guide".\033[0;37m'
+        '\033[1;37mNOTE: The actual system requirements depend on several criteria including data volume, # of plugins among others.\nIt is highly recommended to refer to the System Requirements section of the "User Guide".\n'+
+        'CE sizing profile is decided based on number of CPU(s) on the machine. 8 CPUs are required for the medium profile and 16 CPUs are required for the large profile.\033[0;37m'
     )
-    # Check Memory
-    try:
-        with open("/proc/meminfo", "r") as f:
-            lines = f.readlines()
-            for line in lines:
-                if line.startswith("MemTotal"):
-                    memory = int(line.split()[1])
-                    if memory < MIN_MEM_KB:
-                        print_fail(
-                            f"{round(memory/1000000, 1)}GB Memory (Minimum {round(MIN_MEM_KB/1000000)}GB required)"
-                        )
-                        CHECKS["Memory Check"] = Status.FAIL
-                    else:
-                        print_pass(f"{round(memory/1000000, 1)}GB Memory")
-                        CHECKS["Memory Check"] = Status.PASS
-    except Exception as e:
-        # print(e)
-        print_warning(f"Could not verify Memory information of the machine")
-        CHECKS["Memory Check"] = Status.NOT_VERIFIED
 
     # Check CPUs
     try:
+        profile_name = None
         cpu_cores = multiprocessing.cpu_count()
-        if cpu_cores < MIN_CPU:
-            print_fail(f"{cpu_cores} CPU(s) (Minimum {MIN_CPU} CPU(s) required)")
+        if cpu_cores not in CE_PROFILING:
             CHECKS["CPU Check"] = Status.FAIL
         else:
-            print_pass(f"{cpu_cores} CPU(s)")
+            profile_name = CE_PROFILING[cpu_cores]["name"]
             CHECKS["CPU Check"] = Status.PASS
     except Exception as e:
         print_warning(f"Could not verify CPU information of the machine...")
         CHECKS["CPU Check"] = Status.NOT_VERIFIED
 
+    # Check Memory
+    try:
+        total_memory = None
+        with open("/proc/meminfo", "r") as f:
+            lines = f.readlines()
+            for line in lines:
+                if line.startswith("MemTotal"):
+                    memory = int(line.split()[1])
+                    total_memory = round(memory/1024**2, 1)
+                    memory_pass = False
+                    if cpu_cores in CE_PROFILING:
+                        if memory < CE_PROFILING[cpu_cores]["min_memory"]:
+                            CHECKS["Memory Check"] = Status.FAIL
+                        else:
+                            memory_pass = True
+                    else:
+                        CHECKS["Memory Check"] = Status.FAIL
+                    if memory_pass:
+                        CHECKS["Memory Check"] = Status.PASS
+                    break
+    except Exception as e:
+        # print(e)
+        print_warning(f"Could not verify Memory information of the machine")
+        CHECKS["Memory Check"] = Status.NOT_VERIFIED
+
     # Check Disk Space
     try:
-        path = "/var/lib/docker"
-        if isRedHat() and not isRedHat79():
-            path = "/var/lib/containers"
-        disk_stats = shutil.disk_usage(path)
+        # Get the path of the current file
+        current_file_path = __file__
+        # Get the directory of the current file
+        current_dir = os.path.dirname(current_file_path) or os.getcwd()
+        disk_stats = shutil.disk_usage(current_dir)
         free_space = disk_stats.free
-        if free_space < MIN_DISK_BYTES:
-            print_fail(
-                f"{round(free_space/1000000000, 1)}GB free disk space (Minimum {round(MIN_DISK_BYTES/1000000000, 1)}GB free disk space is required)"
-            )
-            CHECKS["Disk Space Check"] = Status.FAIL
+        total_space = disk_stats.total
+        disk_space_check_pass = False
+        if cpu_cores in CE_PROFILING:
+            min_disk_bytes = CE_PROFILING[cpu_cores]["min_disk_bytes"]
+            if total_space < min_disk_bytes:
+                CHECKS["Disk Space Check"] = Status.FAIL
+            else:
+                disk_space_check_pass = True
         else:
-            print_pass(f"{round(free_space/1000000000, 1)}GB free disk space")
+            CHECKS["Disk Space Check"] = Status.FAIL
+        
+        if disk_space_check_pass:
             CHECKS["Disk Space Check"] = Status.PASS
+        try:
+            if free_space < MIN_FREE_DISK_BYTES:
+                CHECKS["Free Disk Space Check"] = Status.FAIL
+            else:
+                CHECKS["Free Disk Space Check"] = Status.PASS
+        except Exception as e:
+            print_warning(f"Could not verify Disk information of the machine")
+            CHECKS["Free Disk Space Check"] = Status.NOT_VERIFIED
     except Exception as e:
         # print(e)
         print_warning(f"Could not verify Disk information of the machine")
         CHECKS["Disk Space Check"] = Status.NOT_VERIFIED
 
-    # Check 15672 and 27017 Port availability
-    if is_ha:
-        try:
-            port_flag = True
-            for port in [4369, 5672, 15672, 25672, 35672]:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                result = sock.connect_ex(("127.0.0.1", port))
-                if result == 0:
-                    if is_rabbitmq_running:
-                        print_warning("RabbitMQ container is already running.")
-                        break
-                    else:
-                        print_fail(f"Port {port} is already in use.")
-                        port_flag = False
-                else:
-                    print_pass(f"Port {port} is available.")
+    matched = not ( Status.FAIL in [
+            CHECKS.get("CPU Check"),
+            CHECKS.get("Memory Check"), 
+            CHECKS.get("Disk Space Check"), 
+            CHECKS.get("Free Disk Space Check")
+        ]
+    )
+    sizing_result = None
+    if not profile_name and cpu_cores < MEDIUM_PROFILE_REQUIREMENTS[0]:
+        profile_name = CE_PROFILING[MEDIUM_PROFILE_REQUIREMENTS[0]]["name"]
+    elif not profile_name:
+        profile_name = CE_PROFILING[LARGE_PROFILE_REQUIREMENTS[0]]["name"]
+    if matched:
+        sizing_result = f"\033[0;32mMatched with {profile_name} profile\033[0;37m"
+    else:
+        sizing_result = f"\033[1;31mFailed for {profile_name} profile\033[0;37m"
+    print("\nCE Sizing Profile Check:", sizing_result, end="\n\n")
+    if not matched:
+        machine_specs = [cpu_cores, total_memory, round(total_space/1024**3, 1), round(free_space/1024**3, 1)]
+        print_sizing_table(machine_specs)
 
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            result = sock.connect_ex(("127.0.0.1", 27017))
-            if result == 0:
-                if is_mongodb_running:
-                    print_warning("MongoDB container is already running.")
-                else:
-                    print_fail(f"Port 27017 is already in use.")
-                    port_flag = False
-            else:
-                print_pass(f"Port 27017 is available.")
-
-            CHECKS["Port Check"] = Status.PASS if port_flag else Status.FAIL
-        except Exception as e:
-            # print(e)
-            print_warning(f"Could not verify Port information of the machine")
-            CHECKS["Port Check"] = Status.NOT_VERIFIED
+    # Check port availability
+    if is_ha or (AVAILABLE_INPUTS.get("HA_IP_LIST") and AVAILABLE_INPUTS.get("HA_CURRENT_NODE")):
+        check_for_ha_ports()
 
     if Status.FAIL in [
         CHECKS.get("Memory Check"),
         CHECKS.get("Disk Space Check"),
+        CHECKS.get("Free Disk Space Check"),
         CHECKS.get("CPU Check"),
         CHECKS.get("Port Check"),
     ]:
@@ -615,13 +881,25 @@ def check_machine_specs():
             "\033[1;31mOne or more system requirement checks have failed. Please ensure the minimum system requirements are met to proceed further. \033[0;37m"
         )
 
+    global should_ignore
+    if not should_ignore and Status.FAIL in [
+        CHECKS.get("Memory Check"),
+        CHECKS.get("Disk Space Check"),
+        CHECKS.get("Free Disk Space Check"),
+        CHECKS.get("CPU Check"),
+        CHECKS.get("Port Check"),
+    ]:
+        exit(1)
+
 
 def check_docker_versions():
     try:
-        regex = "(\d+(\.\d+){2,3})"
+        global CONTAINERIZATION_PLATFORM, COMPOSE_VERSION
+        regex = r"(\d+(\.\d+){2,3})"
         command = "docker --version"
         p = subprocess.check_output(command, shell=True)
         docker_version = re.search(regex, p.decode("utf-8")).groups()[0]
+        CONTAINERIZATION_PLATFORM = "Docker " + docker_version
         if compare_versions(docker_version, MIN_DOCKER_VERSION):
             print_pass(f"Docker Version {docker_version}")
             CHECKS["Docker"] = Status.PASS
@@ -633,9 +911,10 @@ def check_docker_versions():
         if docker_version != RECOMMENDED_DOCKER_VERSION:
             print_warning(f"The recommended docker version is {RECOMMENDED_DOCKER_VERSION}")
 
-        command = "docker-compose --version"
+        command = "docker compose version"
         p = subprocess.check_output(command, shell=True)
         docker_compose_version = re.search(regex, p.decode("utf-8")).groups()[0]
+        COMPOSE_VERSION = "docker compose " + docker_compose_version
         if compare_versions(docker_compose_version, MIN_DOCKER_COMPOSE_VERSION):
             print_pass(f"Docker Compose Version {docker_compose_version}")
             CHECKS["Docker-Compose"] = Status.PASS
@@ -645,7 +924,7 @@ def check_docker_versions():
             )
             CHECKS["Docker-Compose"] = Status.FAIL
         if docker_compose_version != RECOMMENDED_DOCKER_COMPOSE_VERSION:
-            print_warning(f"The recommended docker-compose version is {RECOMMENDED_DOCKER_COMPOSE_VERSION}")
+            print_warning(f"The recommended docker compose version is {RECOMMENDED_DOCKER_COMPOSE_VERSION}")
 
     except Exception as e:
         CHECKS["Docker-Compose"] = Status.NOT_VERIFIED
@@ -655,7 +934,8 @@ def check_docker_versions():
 
 def check_podman_versions():
     try:
-        regex = "(\d+(\.\d+){2,3})"
+        global CONTAINERIZATION_PLATFORM, COMPOSE_VERSION
+        regex = r"(\d+(\.\d+){2,3})"
         command = "podman-compose --version"
         p = subprocess.check_output(command, shell=True)
         lines = p.decode("utf-8").splitlines()
@@ -668,6 +948,7 @@ def check_podman_versions():
 
         if podman_version == "":
             raise
+        CONTAINERIZATION_PLATFORM = "Podman " + podman_version
         if compare_versions(podman_version, MIN_PODMAN_VERSION):
             print_pass(f"Podman Version {podman_version}")
             CHECKS["Podman"] = Status.PASS
@@ -687,6 +968,7 @@ def check_podman_versions():
 
         if podman_compose_version == "":
             raise
+        COMPOSE_VERSION = "podman-compose " + podman_compose_version
         if compare_versions(podman_compose_version, MIN_PODMAN_COMPOSE_VERSION):
             print_pass(f"Podman Compose Version {podman_compose_version}")
             CHECKS["Podman-Compose"] = Status.PASS
@@ -728,7 +1010,7 @@ def check_podman_versions():
 def validate_proxy(proxy, cur_proxy=None):
     if proxy == "" and cur_proxy is not None and len(cur_proxy) > 0:
         return True
-    regex = "^(?:(.*))://(?:(.*))$"
+    regex = r"^(?:(.*))://(?:(.*))$"
     result = re.search(regex, proxy)
     if result is None:
         print("Invalid Proxy Provided...")
@@ -777,37 +1059,46 @@ def set_ce_version_for_vm():
         AVAILABLE_INPUTS["UI_TAG"] = UI_TAG
         if BETA_OPT_IN.lower() == "yes":
             AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
+            AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_BETA_VERSION
         else:
+            AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
             AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
         AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_1_LATEST_TAG
         AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_1_LATEST_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
     except Exception:
         ask_for_ce_version()
 
 
 def ask_for_ce_version():
     while True:
-        current_version = ""
-        if AVAILABLE_INPUTS.get("BETA_OPT_IN", "No").lower() in ["yes", "y"]:
-            current_version = CE_VERSION_3
-        elif CORE_VERSION_1_TAG == AVAILABLE_INPUTS.get("CORE_TAG", "").strip():
-            current_version = CE_VERSION_1
-        elif CORE_VERSION_2_TAG == AVAILABLE_INPUTS.get("CORE_TAG", "").strip():
-            current_version = CE_VERSION_2
-
+        current_version = AVAILABLE_INPUTS.get("CURRENT_DATABASE_VERSION", "").strip().strip("'").strip('"')
+        default_ce_version_options = [CE_VERSION_1, CE_VERSION_2, CE_VERSION_3]
+        ce_version_options = []
+        if compare_ce_versions(CURRENT_VERSION, current_version) >= 0:
+            ce_version_options.append(CE_VERSION_1)
+        if compare_ce_versions(PREVIOUS_VERSION, current_version) >= 0:
+            ce_version_options.append(CE_VERSION_2)
+        if compare_ce_versions(CURRENT_BETA_VERSION, current_version) >= 0:
+            ce_version_options.append(CE_VERSION_3)
+        if not ce_version_options:
+            ce_version_options = default_ce_version_options
+        version_selection_msg = ""
+        for i, ce_version in enumerate(ce_version_options):
+            version_selection_msg += f"\t {i+1}. {ce_version} \n"
         if current_version == "":
             print(
-                f"\nAvailable Netskope CE Versions\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n"
+                f"\nAvailable Netskope CE Versions\n{version_selection_msg}"
             )
         else:
             print(
-                f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n\t 1. {CE_VERSION_1} \n\t 2. {CE_VERSION_2} \n\t 3. {CE_VERSION_3}\n"
+                f"\nAvailable Netskope CE Versions (Current Version: {current_version})\n{version_selection_msg}"
             )
-        n = input("Select the version you want to install (1/2/3): ")
+        number_of_versions = list(range(1, len(ce_version_options)+1))
+        number_of_versions_str = "/".join(str(x) for x in number_of_versions)
+        n = input(f"Select the version you want to install ({number_of_versions_str}): ")
         try:
             n = int(n)
-            if n not in [1, 2, 3]:
+            if n not in number_of_versions:
                 print(f"{n} is not a valid selection.")
                 continue
             break
@@ -815,27 +1106,9 @@ def ask_for_ce_version():
             print(err)
             print(f"{n} is not a valid selection.")
             continue
-    if n == 1:
-        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_1_TAG
-        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_1_TAG
-        AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
-        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_1_LATEST_TAG
-        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_1_LATEST_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
-    elif n == 2:
-        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_2_TAG
-        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_2_TAG
-        AVAILABLE_INPUTS["BETA_OPT_IN"] = "No"
-        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_2_LATEST_TAG
-        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_2_LATEST_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = PREVIOUS_VERSION
-    elif n == 3:
-        AVAILABLE_INPUTS["CORE_TAG"] = CORE_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["UI_TAG"] = UI_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["BETA_OPT_IN"] = "yes"
-        AVAILABLE_INPUTS["CORE_LATEST_VERSION_TAG"] = CORE_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["UI_LATEST_VERSION_TAG"] = UI_VERSION_BETA_TAG
-        AVAILABLE_INPUTS["INSTALL_VERSION"] = CURRENT_VERSION
+
+    ce_version = ce_version_options[n-1]
+    AVAILABLE_INPUTS.update(CE_VERSIONS_INPUT_DICT[ce_version])
 
 
 def ask_for_initial_inputs():
@@ -888,12 +1161,24 @@ def ask_for_initial_inputs():
     tenant_name = ""
     while True:
         tenant_name = input(
-            "\n> Please enter the Netskope Tenant Name (Exclude .goskope.com)\n(e.g. Enter 'demo' if Netskope Tenant URL is https://demo.goskope.com)\nPlease Enter 'test' if you do not have any Netskope tenant: "
+            "\n> Please enter the Netskope Tenant URL (e.g. https://demo.goskope.com)\nPlease Enter 'test' if you do not have any Netskope tenant: "
         ).strip()
-        if tenant_name == "" or "goskope.com" in tenant_name:
-            print(
-                "Tenant name can not be empty. It should be without '.goskope.com'..."
-            )
+        if tenant_name == "test":
+            break
+        if not tenant_name:
+            print_fail("Tenant URL can not be empty. Please provide full tenant URL (e.g. https://demo.goskope.com).")
+            continue
+        tenant_name = tenant_name.strip().rstrip("/")
+        result = urlparse(tenant_name)
+        if result.scheme.lower() != "https":
+            print_fail("Tenant URL schema must be https. Please provide full tenant URL (e.g. https://demo.goskope.com).")
+        elif (
+            result.path != ""
+            or result.params != ""
+            or result.query != ""
+            or result.fragment != ""
+        ):
+            print_fail("Invalid Tenant URL provided. Please provide full tenant URL (e.g. https://demo.goskope.com).")
         else:
             break
     AVAILABLE_INPUTS["NETSKOPE_TENANT"] = tenant_name
@@ -1060,7 +1345,7 @@ def check_connectivity():
             60,
             handle_connectivity,
             "Netskope tenant",
-            f"https://{tenant_name}.goskope.com",
+            tenant_name,
         )
 
     if Status.FAIL in [
@@ -1108,7 +1393,7 @@ def check_prerequisites():
         try:
             check_docker_versions()
         except Exception as e:
-            print_fail(f"Could not verify Docker/Docker-compose version of the machine")
+            print_fail(f"Could not verify Docker/Docker compose version of the machine")
     elif isRedHat():
         try:
             check_podman_versions()
@@ -1124,7 +1409,7 @@ def check_prerequisites():
                 check_podman_versions()
             except Exception as e:
                 print_fail(
-                    f"Could not verify Docker/Docker-compose version of the machine"
+                    f"Could not verify Docker/Docker compose version of the machine"
                 )
                 print_fail(
                     f"Could not verify Podman/Podman-compose/Podman-plugins version of the machine"
@@ -1544,6 +1829,19 @@ def assign_memory_to_rabbitmq_container():
         pass
 
 
+def validate_jwt_secret(value):
+    if not value:
+        return False, "JWT Secret should not be empty. Please try again."
+    restricted_chars = {"\\", "/", " ", "'", '"', "?", "&", "\t"}
+    for char in restricted_chars:
+        if char in value:
+            return False, (
+                "JWT Secret can not contain \\ / space "
+                "tab ' \" ? & Please try again."
+            )
+    return True, "Valid"
+
+
 def ask_for_config_params():
     # Ask for Protocol
     protocol = ""
@@ -1605,10 +1903,13 @@ def ask_for_config_params():
                         data = ""
                         while data == "":
                             data = getpass(f"> {user_input}: ").strip()
-                            if data == "":
+                            result, message = validate_jwt_secret(data)
+                            if not result:
                                 print(
-                                    "JWT Secret can not be empty. Please try again.\n"
+                                    f"{message}\n"
                                 )
+                                data = ""
+                                continue
                     elif (
                         "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS
                         and key == "MAINTENANCE_PASSWORD"
@@ -1694,10 +1995,13 @@ def ask_for_config_params():
                             data = ""
                             while data == "":
                                 data = getpass(f"> {user_input}: ").strip()
-                                if data == "":
+                                result, message = validate_jwt_secret(data)
+                                if not result:
                                     print(
-                                        "JWT Secret should not be empty. Please try again.\n"
+                                        f"{message}\n"
                                     )
+                                    data = ""
+                                    continue
                         elif key == "UI_PORT":
                             i = 0
                             while True:
@@ -1785,6 +2089,15 @@ def _validate_current_node(ip):
     return True
 
 
+def recursive_chown(path, uid, gid):
+    os.chown(path, uid, gid)
+    for root, dirs, files in os.walk(path):
+        for dir in dirs:
+            os.chown(os.path.join(root, dir), uid, gid)
+        for file in files:
+            os.chown(os.path.join(root, file), uid, gid)
+
+
 def create_required_files(location):
     if not os.path.exists(f"{location}/config"):
         os.mkdir(f"{location}/config")
@@ -1812,17 +2125,17 @@ def create_required_files(location):
     if not os.path.exists(f"{location}/repos"):
         os.mkdir(f"{location}/repos")
     os.chmod(f"{location}/repos", 0o744)
-    os.chown(f"{location}/repos", 1001, 1001)
+    recursive_chown(f"{location}/repos", 1001, 1001)
 
     if not os.path.exists(f"{location}/plugins"):
         os.mkdir(f"{location}/plugins")
     os.chmod(f"{location}/plugins", 0o744)
-    os.chown(f"{location}/plugins", 1001, 1001)
+    recursive_chown(f"{location}/plugins", 1001, 1001)
 
     if not os.path.exists(f"{location}/custom_plugins"):
         os.mkdir(f"{location}/custom_plugins")
     os.chmod(f"{location}/custom_plugins", 0o744)
-    os.chown(f"{location}/custom_plugins", 1001, 1001)
+    recursive_chown(f"{location}/custom_plugins", 1001, 1001)
 
     if not os.path.isfile(f"{location}/config/mongo_replica.key"):
         with open(f"{location}/config/mongo_replica.key", "w") as fp:
@@ -1835,12 +2148,13 @@ def create_persistent_dirs(location="./data"):
     if not os.path.exists(f"{location}/repos"):
         os.mkdir(f"{location}/repos")
     os.chmod(f"{location}/repos", 0o744)
-    os.chown(f"{location}/repos", 1001, 1001)
+    recursive_chown(f"{location}/repos", 1001, 1001)
 
     if not os.path.exists(f"{location}/plugins"):
         os.mkdir(f"{location}/plugins")
     os.chmod(f"{location}/plugins", 0o744)
     os.chown(f"{location}/plugins", 1001, 1001)
+    recursive_chown(f"{location}/plugins", 1001, 1001)
 
 
 def update_yaml_file(filename):
@@ -1980,9 +2294,6 @@ def ask_for_ha_values(primary=False):
             "The provided values does not exist in above list. Please provide a valid value."
         )
 
-    # Keep the static value for now.
-    AVAILABLE_INPUTS["SYNC_STRATEGY"] = "1"
-
 
 def generate_dependency_message(version_dict):
     required_versions = []
@@ -2025,7 +2336,7 @@ def set_up_ha_values():
     global is_ha
     # Base version for HA support is 5.0.0
     install_version = AVAILABLE_INPUTS["INSTALL_VERSION"]
-    if list(map(int, install_version.split("."))) < [5, 0, 0]:
+    if install_version < MIN_HA_SUPPORTED_VERSION:
         return
 
     while True:
@@ -2160,8 +2471,152 @@ def get_existing_variable_value(filepath, key_name):
         )
 
 
+def get_os_name_and_major_version():
+    try:
+        pretty_name = ""
+        version_id = ""
+        os_name = ""
+        os_version = ""
+        allow = False
+        if os.path.exists('/etc/os-release'):
+            with open('/etc/os-release', 'r') as f:
+                for line in f:
+                    if line.startswith('PRETTY_NAME='):
+                        pretty_name = line.split('=')[1].strip().strip('"')
+                    elif line.startswith('VERSION_ID='):
+                        version_id = line.split('=')[1].strip().strip('"')
+                    if pretty_name and version_id:
+                        break
+            if "ubuntu" in pretty_name.lower():
+                if version_id.split(".")[0] in ["20", "22"]:
+                    os_version = version_id.split(".")[0]
+                os_name = "Ubuntu"
+                allow = True
+            elif "centos" in pretty_name.lower():
+                if version_id.split(".")[0] in ["7", "8"]:
+                    os_version = version_id.split(".")[0]
+                os_name = "CentOS"
+            elif "red hat" in pretty_name.lower():
+                if version_id.split(".")[0] in ["7", "8", "9"]:
+                    os_version = version_id.split(".")[0]
+                os_name = "RHEL"
+                allow = True
+        os_name_and_major_version = f"{os_name} {os_version}".strip()
+        if os_name_and_major_version not in RECOMMENDED_HOST_OS and allow:
+            print_warning(f"WARNING: CE is not supported on {pretty_name} version. Please switch to one of the supported version of OS. Supported OS: {RECOMMENDED_HOST_OS}")
+        elif os_name_and_major_version not in RECOMMENDED_HOST_OS:
+            print(
+                f"\033[1;31mCE is not supported on {pretty_name}. Please switch to one of the supported OS. Supported OS: {RECOMMENDED_HOST_OS} \033[0;37m"
+            )
+            if not should_ignore:
+                exit(1)
+        return os_name_and_major_version
+    except Exception:
+        pass
+    return ""
+
+def collect_host_platform_details():
+    gcp = "gcp"
+    aws = "aws"
+    azure = "azure"
+    vmware = "vmware"
+    unknown = "unknown"
+
+    base_url = "http://169.254.169.254"
+    def check_platform(url, headers, machine_type):
+        try:
+            url_obj = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(url_obj, timeout=10) as response:
+                if response.getcode() == 200:
+                    return machine_type
+                return False
+        except Exception:
+            return False
+    
+    def check_gcp():
+        headers = {
+            "Metadata-Flavor": "Google"
+        }
+        url = f'{base_url}/computeMetadata/v1/instance/hostname'
+
+        return check_platform(url, headers, gcp)
+    # check functon
+    def check_ce_vm_marker_file():
+        file_path = "/.cloud_exchange_vm.marker"
+        if(ce_as_vm_check()):
+            with open(file_path, 'r') as file:
+                lines = file.readlines()
+                if(lines):
+                    return lines[0].strip().lower()
+
+    def check_aws():
+        # request for token
+        headers = {
+            "X-aws-ec2-metadata-token-ttl-seconds": "21600"
+        }
+        token_url =f'{base_url}/latest/api/token'
+        TOKEN = None
+        try:
+            request = urllib.request.Request(token_url, headers=headers, method="PUT")
+            with urllib.request.urlopen(request, timeout=10) as response:
+                TOKEN = response.read().decode("utf-8")
+                
+        except Exception:
+            return False
+
+        # request for metadata
+        headers = {
+            "X-aws-ec2-metadata-token": f"{TOKEN}"
+        }
+        metadata_url = f'{base_url}/latest/meta-data/local-hostname'
+        return check_platform(metadata_url, headers, aws)
+
+    def check_azure():
+        headers = {
+            "Metadata": "true"
+        }
+        url = f'{base_url}/metadata/instance?api-version=2023-11-15'
+
+        return check_platform(url, headers, azure)
+
+    def check_vmware():
+        command = 'lscpu'
+        output = execute_shell_command(command).decode('utf-8')
+        lines = output.split("\n")
+        for line in lines:
+            if 'Hypervisor vendor' in line:
+                return line.split(":")[-1].strip().lower()
+        return False
+
+    if (check_gcp() == gcp):
+        return gcp
+    elif (check_aws() == aws or check_ce_vm_marker_file() == aws):
+        return aws
+    elif (check_azure() == azure or check_ce_vm_marker_file() == azure):
+        return azure
+    elif (check_vmware() == vmware):
+        return vmware
+    else:
+        return unknown
+
+
+def collect_host_details():
+    try:
+        print("\nChecking for host details, please wait for a few seconds...")
+        global HOST_OS, COMPOSE_VERSION, CONTAINERIZATION_PLATFORM
+        HOST_OS = get_os_name_and_major_version()
+        AVAILABLE_INPUTS["CE_AS_VM"] = str(ce_as_vm_check())
+        AVAILABLE_INPUTS["HA_ENABLED"] = "True" if is_ha else "False"
+        AVAILABLE_INPUTS["CONTAINERIZATION_PLATFORM"] = f'"{CONTAINERIZATION_PLATFORM}"'
+        AVAILABLE_INPUTS["COMPOSE_VERSION"] = f'"{COMPOSE_VERSION}"'
+        AVAILABLE_INPUTS["HOST_OS"] = f'"{HOST_OS}"'
+        AVAILABLE_INPUTS["PLATFORM_PROVIDER"] = str(collect_host_platform_details())
+    except Exception:
+        pass
+
 def run():
     try:
+        global should_ignore
         parser = argparse.ArgumentParser(
             prog="./setup",
             description="Setup the environment for the Netskope CE.",
@@ -2206,6 +2661,7 @@ def run():
             get_all_existed_env_variable(
                 f"{location}/config/.env"
             )  # Get env variables from shared location
+            get_all_existed_env_variable(f"{location}/config/.env.ceversion")
 
             AVAILABLE_INPUTS["HA_NFS_DATA_DIRECTORY"] = location
             ask_for_ha_values(primary=False)
@@ -2215,6 +2671,9 @@ def run():
                 update_yaml_file("podman-compose")
         else:
             get_all_existed_env_variable()  # Get already exsting env variables
+            location = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY", "")
+            get_all_existed_env_variable(".env.ceversion")
+            get_all_existed_env_variable(f"{location}/config/.env.ceversion")
             if not ce_as_vm_check():
                 ask_for_ce_version()
             else:
@@ -2224,6 +2683,7 @@ def run():
             set_up_ha_values()
             location = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY")
 
+        collect_host_details()
         check_prerequisites()
         migrate_mongo()
         check_and_apply_file_permissions()
@@ -2244,7 +2704,7 @@ def run():
                     "\033[1;31mIgnoring the failures... '--ignore-failures' flag applied.\033[0;37m"
                 )
             else:
-                exit()
+                exit(1)
 
         if Status.NOT_VERIFIED in CHECKS.values():
             shouldContinue = (
