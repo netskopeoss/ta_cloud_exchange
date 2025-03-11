@@ -3,6 +3,7 @@
 import os
 import time
 import argparse
+import subprocess
 from pymongo import MongoClient
 from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
@@ -11,9 +12,60 @@ load_dotenv()
 load_dotenv(os.environ.get("LOCATION"))
 load_dotenv(f'{os.environ.get("HA_NFS_DATA_DIRECTORY")}/config/.env', override=True)
 
-MAINTENANCE_PASSWORD_ESCAPED = os.getenv("MAINTENANCE_PASSWORD_ESCAPED")
 HA_CURRENT_NODE = os.environ["HA_CURRENT_NODE"]
+CE_SETUP_ID = os.environ["CE_SETUP_ID"] 
+CE_HEX_CODE = os.environ["CE_HEX_CODE"]
 REPLICA_SET_INITIALIZE_RETRY_COUNT = 3
+ITER_COUNT=10000
+
+def change_maintenance_password(raw_text: str, forward=True):
+    try:
+        global CE_SETUP_ID
+        global CE_HEX_CODE
+        CE_SETUP_ID = CE_SETUP_ID.strip('"')
+        command = f"""echo -n '{CE_SETUP_ID}' | openssl dgst -sha256 -hex | awk '{{print $2}}'"""
+        process = subprocess.Popen(
+            command,
+            shell=True,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+        )
+        out, err = process.communicate()
+        if process.returncode == 0:
+            processed_stream = out.decode().strip()
+            # generate mpass
+            if forward:
+                second_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter {ITER_COUNT}"""
+                second_process = subprocess.Popen(
+                    second_command,
+                    shell=True,
+                    stderr=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                )
+                sec_out, sec_err = second_process.communicate()
+                if second_process.returncode == 0:
+                    return sec_out.decode().strip()
+                else:
+                    raise Exception(f"{sec_err.decode('utf-8')}\n")
+            else:
+                third_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -d -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter {ITER_COUNT}"""
+                third_process = subprocess.Popen(
+                    third_command,
+                    shell=True,
+                    stderr=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                )
+                third_out, third_err = third_process.communicate()
+                if third_process.returncode == 0:
+                    return third_out.decode().strip()
+                else:
+                    raise Exception(f"{third_err.decode('utf-8')}\n")
+        else:
+            raise Exception(f"{err.decode('utf-8')}\n")
+    except Exception as e:
+        raise Exception(
+            f"Error occurred while processing environment variables. Error: {e}"
+        )
 
 def strtobool(val):
     val = val.lower()
@@ -220,6 +272,7 @@ if __name__ == "__main__":
     parser.add_argument('-r', '--remove', type=lambda x:bool(strtobool(x)), nargs='?', const=True, default=False, help='Remove the current node from the replica set.')
     args = parser.parse_args()
 
+    MAINTENANCE_PASSWORD_ESCAPED = change_maintenance_password(os.getenv("MAINTENANCE_PASSWORD_ESCAPED"), False) if os.getenv("CE_SETUP_ID") else os.getenv("MAINTENANCE_PASSWORD_ESCAPED")
     try:
         # Create Mongo replica set
         if args.initiate:
