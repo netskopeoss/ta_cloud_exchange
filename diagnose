@@ -31,9 +31,25 @@ fi
 # --- Output functions --------------------------------------------
 
 RHEL=$(hostnamectl | grep "Operating System:" | sed 's/Operating System://')
+
+decrypt() {
+    echo "$1" | openssl enc -aes-256-cbc -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
+}
+
+
 MAINTENANCE_PASSWORD=$(sudo cat $LOCATION  | grep MAINTENANCE_PASSWORD=)
 MAINTENANCE_PASSWORD=${MAINTENANCE_PASSWORD#*=}
+
+# Check if CE_SETUP_ID is set
+if [ -n "${CE_SETUP_ID:-}" ]; then
+  CE_SETUP_ID=$(echo "$CE_SETUP_ID" | tr -d '"')
+  # Generate processed
+  PROCESSED_KEY=$(echo -n $CE_SETUP_ID | openssl dgst -sha256 -hex | awk '{print $2}')
+  MAINTENANCE_PASSWORD="$(decrypt "${MAINTENANCE_PASSWORD}" "${PROCESSED_KEY}")"
+fi
+
 MAINTENANCE_PASSWORD=$(echo $MAINTENANCE_PASSWORD | tr -d "'")
+
 core_check=false
 core_running=false
 ui_check=false
@@ -515,9 +531,9 @@ out_tenant_names() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.tenants.find({},{_id:0, name:1, tenantName:1, initialRange:1, alert_types:1})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.tenants.find({},{_id:0, name:1, tenantName:1, 'parameters.tenantName':1, initialRange:1, alert_types:1})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
   else
-    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.tenants.find({},{_id:0, name:1, tenantName:1, initialRange:1, alert_types:1})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.tenants.find({},{_id:0, name:1, tenantName:1, 'parameters.tenantName':1, initialRange:1, alert_types:1})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
   fi
   stop_spin "Tenant Names\t" $pid "success"
   echo $OUT
@@ -551,9 +567,9 @@ out_worker_details() {
     return 1
   fi
   if [[ $RHEL: == *"Red Hat"* ]]; then
-    $podman_compose exec core celery -A netskope.common.celery.main inspect active | sed -e '/podman/d' -e '/exit code/d' -e "s/\x1B[^m]*m//g" >&$OUT
+    $podman_compose exec core bash -c "source /opt/load_env.sh && celery -A netskope.common.celery.main inspect active" | sed -e '/podman/d' -e '/exit code/d' -e "s/\x1B[^m]*m//g" >&$OUT
   else
-    $docker_compose exec core celery -A netskope.common.celery.main inspect active | sed -e "s/\x1B[^m]*m//g" >&$OUT
+    $docker_compose exec core bash -c "source /opt/load_env.sh && celery -A netskope.common.celery.main inspect active" | sed -e "s/\x1B[^m]*m//g" >&$OUT
   fi
   stop_spin "Worker Status\t" $pid "success"
   echo $OUT

@@ -71,7 +71,15 @@ if [ "$MIGRATE_MONGO" = "true" ]; then
     sudo chmod -R 744 data/mongo-data
     compose_command up mongodb-primary -d
     sleep 5
-    compose_command exec mongodb-primary bash -c "mongosh -u root -p \$MONGO_INITDB_ROOT_PASSWORD --eval 'cfg = rs.conf();cfg.members[0].host = \"$HA_PRIMARY_NODE_IP:27017\";rs.reconfig(cfg, { force: true })'"
+    decrypt() {
+        echo "$1" | openssl enc -aes-256-cbc -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
+    }
+    CE_SETUP_ID=$(echo "$CE_SETUP_ID" | tr -d '"')
+    # Generate processed key
+    PROCESSED_KEY=$(echo -n $CE_SETUP_ID | openssl dgst -sha256 -hex | awk '{print $2}')
+    # export value
+    export MONGO_INITDB_ROOT_PASSWORD="$(decrypt "${MONGO_INITDB_ROOT_PASSWORD}" "${PROCESSED_KEY}")"
+    compose_command exec mongodb-primary bash -c "mongosh -u root -p $MONGO_INITDB_ROOT_PASSWORD --eval 'cfg = rs.conf();cfg.members[0].host = \"$HA_PRIMARY_NODE_IP:27017\";rs.reconfig(cfg, { force: true })'"
     sleep 5
     compose_command down -v
     echo "Successfully migrated Mongo data"
