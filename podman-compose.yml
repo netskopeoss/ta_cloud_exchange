@@ -15,6 +15,7 @@ services:
     volumes:
       - ./data/rabbitmq/custom.conf:/etc/rabbitmq/conf.d/custom.conf:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z
+      - ./data/database-init/load_env.sh:/opt/load_env.sh:z
     logging:
       options:
         max-size: "10m"
@@ -23,7 +24,7 @@ services:
       resources:
         limits:
           memory: ${RABBITMQ_RAM_RESOURCES:-3072}M
-    entrypoint: ["/bin/bash","-c","echo ${RABBITMQ_COOKIE} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"]
+    entrypoint: ["/bin/bash","-c","source /opt/load_env.sh && echo ${RABBITMQ_COOKIE} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server"]
   mongodb-primary:
     image: index.docker.io/mongo:6.0.12
     user: mongodb
@@ -33,6 +34,7 @@ services:
     volumes:
       - ./data/mongo-data/data/db:/data/db:z
       - ./data/database-init/mongo-init.sh:/docker-entrypoint-initdb.d/mongo-init.sh:z
+      - ./data/database-init/load_env.sh:/opt/load_env.sh:z
     environment:
       - MONGODB_ADVERTISED_HOSTNAME=mongodb-primary
       - MONGO_INITDB_ROOT_USERNAME=root
@@ -49,6 +51,7 @@ services:
       resources:
         limits:
           memory: ${MONGODB_RAM_RESOURCES:-3072}M
+    entrypoint: ["/bin/bash", "-c", "source /opt/load_env.sh && docker-entrypoint.sh mongod"]
   core:
     image: index.docker.io/${CORE_TAG}
     env_file:
@@ -60,6 +63,7 @@ services:
       - ./data/rabbitmq/data:/var/lib/rabbitmq:z
       - nfs_repos:/opt/netskope/repos
       - nfs_plugins:/opt/netskope/plugins
+      - ./data/database-init/load_env.sh:/opt/load_env.sh:z
     environment:
       - JWT_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
@@ -100,6 +104,7 @@ services:
       - rabbitmq-stats
     labels:
       - com.centurylinklabs.watchtower.enable=true
+    entrypoint: ["/bin/bash", "-c", "source /opt/load_env.sh && /opt/start.sh"]
   ui:
     image: index.docker.io/${UI_TAG}
     restart: always
