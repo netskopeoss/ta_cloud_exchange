@@ -33,7 +33,7 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 
 ## Install Procedure for CE as a VM deployment
 
-- Download the latest version of OVA from this [link](https://cloud-exchange-store-beta.s3.us-east-1.amazonaws.com/cloudexchange/ova/cloud-exchange-5.1.1-20250313.ova).
+- Download the latest version of OVA from this [link](https://cloud-exchange-store.s3.us-east-1.amazonaws.com/cloudexchange/ova/cloud-exchange-5.1.1-20250324.ova).
 
 ## Troubleshooting
 
