@@ -15,6 +15,7 @@ load_dotenv(f'{os.environ.get("HA_NFS_DATA_DIRECTORY")}/config/.env', override=T
 HA_CURRENT_NODE = os.environ["HA_CURRENT_NODE"]
 CE_SETUP_ID = os.environ["CE_SETUP_ID"] 
 CE_HEX_CODE = os.environ["CE_HEX_CODE"]
+CE_IV = os.environ["CE_IV"]
 REPLICA_SET_INITIALIZE_RETRY_COUNT = 3
 ITER_COUNT=10000
 
@@ -22,6 +23,8 @@ def change_maintenance_password(raw_text: str, forward=True):
     try:
         global CE_SETUP_ID
         global CE_HEX_CODE
+        global CE_IV
+        global ITER_COUNT
         CE_SETUP_ID = CE_SETUP_ID.strip('"')
         command = f"""echo -n '{CE_SETUP_ID}' | openssl dgst -sha256 -hex | awk '{{print $2}}'"""
         process = subprocess.Popen(
