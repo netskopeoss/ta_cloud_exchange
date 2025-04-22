@@ -115,12 +115,12 @@ DEFAULT_INPUTS = {
 }
 AVAILABLE_INPUTS = {}
 LATEST_TAG_AND_VERSION = {
-    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core5-5.1.1",
-    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui5-5.1.1",
+    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core5-5.1.1-dlp-beta-1",
+    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui5-5.1.1-dlp-beta-1",
     "BETA_OPT_IN": "No",
     "CORE_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:core5-latest",
     "UI_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:ui5-latest",
-    "INSTALL_VERSION": "5.1.1",
+    "INSTALL_VERSION": "5.1.1-dlp-beta-1",
 }
 CHECKS = {}
 
@@ -266,7 +266,6 @@ def compare_versions(version1, version2):
             return False
     return True
 
-
 def compare_ce_versions(v1, v2):
     """
     Compare two CE version strings.
@@ -308,7 +307,6 @@ def compare_ce_versions(v1, v2):
         return -1
     else:
         return 1
-
 
 def _get_container_name(container_info):
     container_name = container_info.get("Names", "")
@@ -1718,6 +1716,32 @@ def check_and_apply_file_permissions():
             f"Error occurred while verifying file permissions for data/ca_certs"
         )
         CHECKS["ca_certs"] = Status.FAIL
+
+    try:
+        if not os.path.exists("data/files-data"):
+            print_fail(
+                f"Could not locate data/files-data directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
+            )
+            CHECKS["files_data"] = Status.FAIL
+        else:
+            if platform.system().lower() not in ["darwin"]:
+                command = "sudo chown -R 1001:1001 data/files-data"
+                set_directory_permission("data/files-data", command)
+                print_pass(
+                    "Changing owner of data/files-data to user with uid 1001"
+                )
+                CHECKS["files_data"] = Status.PASS
+            command = "sudo chmod -R 760 data/files-data/"
+            set_directory_permission("data/files-data", command)
+            command = "sudo chmod 760 data/files-data"
+            set_directory_permission("data/files-data", command)
+            print_pass(f"Adding read and write permissions to data/files-data")
+            CHECKS["files_data"] = Status.PASS
+    except Exception as e:
+        print_fail(
+            f"Error occurred while verifying file permissions for data/files-data"
+        )
+        CHECKS["files_data"] = Status.FAIL
 
     # start script
     try:

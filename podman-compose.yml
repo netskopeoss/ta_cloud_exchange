@@ -61,6 +61,7 @@ services:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - ./data/ca_certs:/usr/local/share/ca-certificates:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq:z
+      - ./data/files-data:/etc/files-data:z
       - nfs_repos:/opt/netskope/repos
       - nfs_plugins:/opt/netskope/plugins
       - ./data/database-init/load_env.sh:/opt/load_env.sh:z

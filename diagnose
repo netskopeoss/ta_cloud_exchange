@@ -358,13 +358,25 @@ out_platform_details() {
 
     echo -e "\n------- CLS Plugin Details --------" >>$OUT
     $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e 's/\"transformData\"/\"MappingTransformation\"/g' -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >> $OUT
-    
+
+    echo -e "\n------- EDM Plugin Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_configurations.find({}, {name: 1, plugin:1, active: 1, parameters: {sanity_inputs: 1, sanity_results: 1, protocol: 1, authentication_type: 1}, pluginType:1, lastRunAt:1, lastUpdatedAt:1, createdAt:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Plugin Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_configurations.find({}, {name: 1, plugin:1, active: 1, parameters: {directory_configuration: 1, file_results: 1, protocol: 1}, lastRunAt:1, lastUpdatedAt:1, createdAt:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+    metadatas=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cfc_images_metadata.countDocuments({})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Total File Metadata: $metadatas" >> $OUT
+    outdated_metadatas=$($podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cfc_images_metadata.countDocuments({outdated: true})" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Outdated File Metadata: $outdated_metadatas" >> $OUT
+
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
     out_plugin_version "configurations" "$podman_compose"
     out_plugin_version "cls_configurations" "$podman_compose"
     out_plugin_version "grc_configurations" "$podman_compose"
     out_plugin_version "cre_configurations" "$podman_compose"
     out_plugin_version "itsm_configurations" "$podman_compose"
+    out_plugin_version "edm_configurations" "$podman_compose"
+    out_plugin_version "cfc_configurations" "$podman_compose"
 
     echo -e "\n------- CTE Business Rule Details --------" >>$OUT
     $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
@@ -380,6 +392,28 @@ out_platform_details() {
   
     echo -e "\n------- CLS Business Rule Details --------" >>$OUT
     $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_business_rules.find({}, {name: 1, muted:1, filters:1, siemMappings:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- EDM Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_business_rules.find({}, {name: 1, status:1, createdAt:1, updatedAt:1, sharedWith:1, sharedAt:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- EDM Manual Upload Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_manual_upload_configurations.find({}, {fileName: 1, name:1, sharedWith: 1, parameters: 1, lastRunAt:1, status:1, sharedAt:1, updatedAt:1, createdAt:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- EDM Statistics Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_statistics.find({}, {sentHashes: 1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Business Rule Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_business_rules.find({}, {name: 1, filters:1, exceptions:1, muted:1, updatedAt:1, updatedBy:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Sharing Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_sharing.find({}, {sourceConfiguration: 1, destinationConfiguration:1, actions:1, status:1, mappings:1, errorState:1, createdAt:1, updatedAt:1, sharedAt:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------ CFC Manual Upload Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_manual_upload_configurations.find({}, {name:1, classifierName: 1, classifierType: 1, classifierID:1, status:1, lastRunAt:1, updatedAt:1, createdAt:1, files:1, destinationConfiguration:1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Statistics Details --------" >>$OUT
+    $podman_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_statistics.find({}, {sentImages: 1, _id:0}).toArray(), null, 2)" | sed -e '/podman/d' -e '/exit code/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
   else
     SETTINGS=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.settings.find({},{'databaseVersion': 1, 'uid':1, _id:0})" | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
     CE_VERSION=$(echo "$SETTINGS" | grep -Po "(?<=databaseVersion: ')[^']*")
@@ -428,13 +462,25 @@ out_platform_details() {
 
     echo -e "\n------- CLS Plugin Details --------" >>$OUT
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_configurations.find({}, {name: 1, plugin:1, attributeMapping: 1, parameters: {transformData: 1}, lastRunAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
-  
+
+    echo -e "\n------- EDM Plugin Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_configurations.find({}, {name: 1, plugin:1, active: 1, parameters: {sanity_inputs: 1, sanity_results: 1, protocol: 1, authentication_type: 1}, pluginType:1, lastRunAt:1, lastUpdatedAt:1, createdAt:1, active:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Plugin Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_configurations.find({}, {name: 1, plugin:1, active: 1, parameters: {directory_configuration: 1, file_results: 1, protocol: 1}, lastRunAt:1, lastUpdatedAt:1, createdAt:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
+    metadatas=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cfc_images_metadata.countDocuments({})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Total File Metadata: $metadatas" >> $OUT
+    outdated_metadatas=$($docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); db.cfc_images_metadata.countDocuments({outdated: true})" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g")
+    echo "Outdated File Metadata: $outdated_metadatas" >> $OUT
+
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
     out_plugin_version "configurations" "$docker_compose"
     out_plugin_version "cls_configurations" "$docker_compose"
     out_plugin_version "grc_configurations" "$docker_compose"
     out_plugin_version "cre_configurations" "$docker_compose"
     out_plugin_version "itsm_configurations" "$docker_compose"
+    out_plugin_version "edm_configurations" "$docker_compose"
+    out_plugin_version "cfc_configurations" "$docker_compose"
 
     echo -e "\n------- CTE Business Rule Details --------" >>$OUT
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cte_business_rules.find({}, {name: 1, muted:1, filters:1, exceptions:1, sharedWith:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
@@ -450,6 +496,27 @@ out_platform_details() {
   
     echo -e "\n------- CLS Business Rule Details --------" >>$OUT
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cls_business_rules.find({}, {name: 1, muted:1, filters:1, siemMappings:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- EDM Sharing Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_business_rules.find({}, {name: 1, status:1, createdAt:1, updatedAt:1, sharedWith:1, sharedAt:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- EDM Manual Upload Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_manual_upload_configurations.find({}, {fileName: 1, name:1, sharedWith: 1, parameters: 1, lastRunAt:1, status:1, sharedAt:1, updatedAt:1, createdAt:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- EDM Statistics Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.edm_statistics.find({}, {sentHashes: 1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Business Rule Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_business_rules.find({}, {name: 1, filters:1, exceptions:1, muted:1, updatedAt:1, updatedBy:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------- CFC Sharing Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_sharing.find({}, {sourceConfiguration: 1, destinationConfiguration:1, actions:1, status:1, mappings:1, errorState:1, createdAt:1, updatedAt:1, sharedAt:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" >>$OUT
+
+    echo -e "\n------ CFC Manual Upload Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_manual_upload_configurations.find({}, {name:1, classifierName: 1, classifierType: 1, classifierID:1, status:1, lastRunAt:1, updatedAt:1, createdAt:1, files:1, destinationConfiguration:1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
+
+    echo -e "\n------- CFC Statistics Details --------" >>$OUT
+    $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.cfc_statistics.find({}, {sentImages: 1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
   fi
   stop_spin "CE Details\t\t" $pid "success"
   echo $OUT
