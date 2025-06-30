@@ -1,7 +1,7 @@
 # /bin/sh
 
 decrypt() {
-    echo "$1" | openssl enc -aes-256-cbc -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
+    echo "$1" | openssl enc -aes-256-cbc -A -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
 }
 
 CE_SETUP_ID=$(echo "$CE_SETUP_ID" | tr -d '"')

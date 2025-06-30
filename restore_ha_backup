@@ -8,7 +8,7 @@ fi
 
 ([ -n "${HA_NFS_DATA_DIRECTORY}" ] && [ -n "$HA_PRIMARY_NODE_IP" ] && [ -n "$HA_IP_LIST" ]) || (echo "Please configure HA parameters in setup." && exit 1)
 
-. ${LOCATION} &> /dev/null
+. ${LOCATION}
 if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1 ]; then  
     if [ `grep -c "7.9" /etc/redhat-release` -ge 1 ]; then
         docker compose version &> /dev/null
@@ -67,12 +67,12 @@ set -e
 MIGRATE_MONGO=${MIGRATE_MONGO:-true}
 if [ "$MIGRATE_MONGO" = "true" ]; then
     echo "Migrating Mongo data"
-    sudo chown -R 999:999 data/mongo-data
+    sudo chown -R 1001:1001 data/mongo-data
     sudo chmod -R 744 data/mongo-data
     compose_command up mongodb-primary -d
     sleep 5
     decrypt() {
-        echo "$1" | openssl enc -aes-256-cbc -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
+        echo "$1" | openssl enc -aes-256-cbc -A -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
     }
     CE_SETUP_ID=$(echo "$CE_SETUP_ID" | tr -d '"')
     # Generate processed key

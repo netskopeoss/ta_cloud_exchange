@@ -50,15 +50,16 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
    ```
    0 drwxrwxrwx. 2 devuser devuser   22 Apr 27  2023 ca_certs
    0 drwxr--r--. 3 devuser devuser   60 Apr 25  2023 custom_plugins
-   0 drwxrwxr-x. 2 999      999      27 Apr 25  2023 database-init
-   0 drwxr--r--. 3 999      999      18 May 22 13:18 mongo-data
+   0 drwxrwxr-x. 2 devuser devuser   27 Apr 25  2023 database-init
+   0 drwxr--r--. 3 devuser devuser   18 May 22 13:18 mongo-data
    0 drwxr--r--. 3 devuser devuser   37 Nov  3 19:10 rabbitmq
    0 drwxrw-rw-. 2 devuser devuser  106 Apr 25  2023 ssl_certs
    ```
 
+   - Note devuser uid is 1001
    - Note the mask on line with custom_plugins - mask should be 775
-   - Note ownership of mongo-data - should represent 999:999
-   - Note ownership of database-init - should represent 999:999
+   - Note ownership of mongo-data - should represent 1001:1001
+   - Note ownership of database-init - should represent 1001:1001
    - Note ownership of rabbitmq - should represent 1001:1001
 
 3. If you get `SyntaxError: invalid syntax` while running `sudo ./setup`

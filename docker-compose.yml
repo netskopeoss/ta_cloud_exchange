@@ -1,6 +1,6 @@
 services:
   rabbitmq-stats:
-    image: index.docker.io/rabbitmq:4.0.7-management
+    image: index.docker.io/${RABBITMQ_TAG}
     user: "1001:1001"
     env_file:
       - ./.env
@@ -10,8 +10,12 @@ services:
       - RABBITMQ_DEFAULT_USER=user
       - RABBITMQ_DISK_FREE_LIMIT_ABSOLUTE=1
       - RABBITMQ_RAM_RESOURCES=${RABBITMQ_RAM_RESOURCES:-3072}
+      - RESTART_ON_HEALTHCHECK_FAILURE=false
+      - HEALTHCHECK_FREE_DISK_SPACE_LIMIT=40
+      - HEALTHCHECK_FREE_DISK_SPACE_PATH=/var/lib/rabbitmq
     restart: always
     volumes:
+      - ./data/healthcheck.sh:/opt/healthcheck.sh:z
       - ./data/rabbitmq/custom.conf:/etc/rabbitmq/conf.d/custom.conf:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z
       - ./data/database-init/load_env.sh:/opt/load_env.sh:z
@@ -23,6 +27,11 @@ services:
       resources:
         limits:
           memory: ${RABBITMQ_RAM_RESOURCES:-3072}M
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/healthcheck.sh"]
+      interval: 12h
+      timeout: 30s
+      retries: 3
     entrypoint:
       [
         "/bin/bash",
@@ -30,7 +39,7 @@ services:
         'source /opt/load_env.sh && echo ${RABBITMQ_COOKIE} > /var/lib/rabbitmq/.erlang.cookie && chmod 600 /var/lib/rabbitmq/.erlang.cookie && docker-entrypoint.sh rabbitmq-server'
       ]
   mongodb-primary:
-    image: index.docker.io/mongo:6.0.12
+    image: index.docker.io/${MONGO_TAG}
     user: mongodb
     env_file:
       - ./.env
@@ -67,6 +76,7 @@ services:
       - ./data/rabbitmq/data:/var/lib/rabbitmq:z
       - nfs_repos:/opt/netskope/repos
       - nfs_plugins:/opt/netskope/plugins
+      - ./data/healthcheck.sh:/opt/healthcheck.sh:z
       - ./data/database-init/load_env.sh:/opt/load_env.sh:z
     environment:
       - JWT_SECRET=${JWT_SECRET}
@@ -94,6 +104,9 @@ services:
       # - ENABLE_DEBUG=True
       # - UI_SERVICE_NAME=
       # - THRESHOLD_FOR_IDLE_CHECK_IN_MINUTES=
+      - RESTART_ON_HEALTHCHECK_FAILURE=false
+      - HEALTHCHECK_FREE_DISK_SPACE_LIMIT=40
+      - HEALTHCHECK_FREE_DISK_SPACE_PATH=/var/lib/rabbitmq
     restart: always
     logging:
       options:
@@ -103,6 +116,11 @@ services:
       resources:
         limits:
           memory: ${CORE_RAM_RESOURCES:-3072}M
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/healthcheck.sh"]
+      interval: 12h
+      timeout: 30s
+      retries: 3
     depends_on:
       - mongodb-primary
       - rabbitmq-stats
