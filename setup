@@ -48,6 +48,16 @@ DEFAULT_INPUTS = {
         "skip": True,
         "help": "",
     },
+    "MONGO_TAG": {
+        "default": "crestsystems/netskope:mongo-latest",
+        "skip": True,
+        "help": "",
+    },
+    "RABBITMQ_TAG": {
+        "default": "crestsystems/netskope:mongo-latest",
+        "skip": True,
+        "help": "",
+    },
     "UI_PORT": {
         "default": 80,
         "skip": False,
@@ -94,7 +104,7 @@ DEFAULT_INPUTS = {
     "REQUESTS_TIMEOUT": {"default": 300, "skip": True, "help": ""},
     "POPEN_TIMEOUT": {"default": 1800, "skip": True, "help": ""},
     "IS_MPASS_CONFIGURED": {"default": True, "skip": True, "help": ""},
-    "MONGO_COMPATIBILITY": {"default": False, "skip": True, "help": ""},
+    "MONGO_CURRENT_VERSION": {"default": "", "skip": True, "help": ""},
     "RABBITMQ_COOKIE": {"default": "", "skip": True, "help": ""},
     "LOCATION": {"default": "", "skip": True, "help": ""},
     "COMPOSE_HTTP_TIMEOUT": {"default": 600, "skip": True, "help": ""},
@@ -115,12 +125,14 @@ DEFAULT_INPUTS = {
 }
 AVAILABLE_INPUTS = {}
 LATEST_TAG_AND_VERSION = {
-    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core5-5.1.1",
-    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui5-5.1.1",
+    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core5-5.1.2",
+    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui5-5.1.2",
+    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo8-8.0.6",
+    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq4-4.1.0",
     "BETA_OPT_IN": "No",
     "CORE_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:core5-latest",
     "UI_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:ui5-latest",
-    "INSTALL_VERSION": "5.1.1",
+    "INSTALL_VERSION": "5.1.2",
 }
 CHECKS = {}
 
@@ -180,9 +192,11 @@ GIT_PLUGIN_REPO = (
     "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
 )
 
-MONGO_USER_ID = 999
+MONGO_USER_ID = 1001
+OLD_MONGO_USER_ID = 999
 MONGO_MIGRATION_TIMEOUT = 60
-
+MONGO_LATEST_VERSION = "8.0"
+SUDO_PREFIX = ""
 is_ui_running = False
 is_rabbitmq_running = False
 is_mongodb_running = False
@@ -309,6 +323,16 @@ def compare_ce_versions(v1, v2):
     else:
         return 1
 
+def set_sudo_prefix():
+    global SUDO_PREFIX
+    if hasattr(os, 'geteuid'):
+        euid = os.geteuid()
+        if euid == 0:
+            SUDO_PREFIX = ""
+        else:
+            SUDO_PREFIX = "sudo"
+    else:
+        SUDO_PREFIX = "sudo"
 
 def _get_container_name(container_info):
     container_name = container_info.get("Names", "")
@@ -393,7 +417,7 @@ def create_secret_file(passwords, location):
     with open(location, "w") as f:
         for key, value in passwords.items():
             f.write(f"{key}={value}\n")
-    command = f"sudo chmod 400 {location}"
+    command = f"{SUDO_PREFIX} chmod 400 {location}"
     set_directory_permission(location, command)
 
 
@@ -417,6 +441,7 @@ def put_env_variable(inputs, location=".env"):
     if location != ".env":
         inputs.pop("HA_CURRENT_NODE", None)
         inputs.pop("HA_NFS_DATA_DIRECTORY", None)
+        inputs.pop("MONGO_CURRENT_VERSION", None)
     try:
         if (
             "MAINTENANCE_PASSWORD" in inputs
@@ -461,6 +486,7 @@ def put_env_variable(inputs, location=".env"):
                 inputs["CE_IV"] = AVAILABLE_INPUTS["CE_IV"]
         inputs.pop("MAINTENANCE_PASSWORD", None)
         inputs.pop("MAINTENANCE_PASSWORD_ESCAPED", None)
+        inputs.pop("MONGO_COMPATIBILITY", None)
         with open(location, "w") as f:
             for key, value in inputs.items():
                 f.write(f"{key}={value}\n")
@@ -537,9 +563,14 @@ def run_temp_mongo_container_for_migration(
     maintenance_password, http_proxy, https_proxy
 ):
     """Migrate mongo data by running temp mongo container and update featurecompatibilityversion variable from mongo."""
+    if platform.system().lower() not in ["darwin"]:
+        command = f"{SUDO_PREFIX} chown -R {OLD_MONGO_USER_ID}:{OLD_MONGO_USER_ID} data/mongo-data"
+        set_directory_permission("data/mongo-data", command)
     deployment = None
     MONGO_MIGRATE_IMAGE = "mongo:5.0.21"
-    MONGO_CURRENT_IMAGE = "mongo:6.0.12"
+    MONGO_TEMP_IMAGE_ONE = "mongo:6.0.12"
+    MONGO_TEMP_IMAGE_TWO= "mongo:7.0.16"
+    MONGO_CURRENT_IMAGE = LATEST_TAG_AND_VERSION["MONGO_TAG"]
     temp_mongo_container_name = "mongo-migration"
 
     if isRedHat():
@@ -574,8 +605,66 @@ def run_temp_mongo_container_for_migration(
         )
     except Exception:
         # remove above container
+        pass
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    remove_mongo_contianer(deployment, temp_mongo_container_name)
+    # spin latest mongo version to check compatibility
+    create_mongo_container(
+        deployment,
+        maintenance_password,
+        http_proxy,
+        https_proxy,
+        temp_mongo_container_name,
+        MONGO_TEMP_IMAGE_ONE,
+    )
+    try:
+        time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+        eval_command = (
+            """'db.adminCommand({setFeatureCompatibilityVersion: "6.0"})'"""
+        )
+        execute_mongodb_command(
+            deployment,
+            temp_mongo_container_name,
+            "mongosh",
+            maintenance_password,
+            eval_command,
+            stderr=subprocess.PIPE,
+        )
+    except Exception:
+        # remove above container
+        pass
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    remove_mongo_contianer(deployment, temp_mongo_container_name)
+    # spin latest mongo version to check compatibility
+    create_mongo_container(
+        deployment,
+        maintenance_password,
+        http_proxy,
+        https_proxy,
+        temp_mongo_container_name,
+        MONGO_TEMP_IMAGE_TWO,
+    )
+    try:
+        time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+        eval_command = (
+            """'db.adminCommand({setFeatureCompatibilityVersion: "7.0", confirm: true})'"""
+        )
+        execute_mongodb_command(
+            deployment,
+            temp_mongo_container_name,
+            "mongosh",
+            maintenance_password,
+            eval_command,
+            stderr=subprocess.PIPE,
+        )
+    except Exception:
+        # remove above container
         time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
         remove_mongo_contianer(deployment, temp_mongo_container_name)
+        # update ownership since with CE v5.1.2 mongo custom image has 1001 id
+        if platform.system().lower() not in ["darwin"]:
+            command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
+            set_directory_permission("data/mongo-data", command)
         # spin latest mongo version to check compatibility
         create_mongo_container(
             deployment,
@@ -598,7 +687,10 @@ def run_temp_mongo_container_for_migration(
 
     time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
     remove_mongo_contianer(deployment, temp_mongo_container_name)
-
+    # update ownership since with CE v5.1.2 mongo custom image has 1001 id
+    if platform.system().lower() not in ["darwin"]:
+        command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
+        set_directory_permission("data/mongo-data", command)
     print_pass("The migration of database has been successfully completed.")
 
 
@@ -690,9 +782,9 @@ def create_self_signed_ssl_certs():
         out, err = p.communicate()
         if p.returncode == 0:
             print(f"{err.decode('utf-8')}\n")
-            command = f"sudo chmod 644 {cert_file}"
+            command = f"{SUDO_PREFIX} chmod 644 {cert_file}"
             set_directory_permission(cert_file, command)
-            command_key = f"sudo chmod 644 {key_file}"
+            command_key = f"{SUDO_PREFIX} chmod 644 {key_file}"
             set_directory_permission(key_file, command_key)
         else:
             raise Exception(f"{err.decode('utf-8')}\n")
@@ -1149,10 +1241,16 @@ def parse_proxy(url):
 
 def set_ce_version_for_vm():
     try:
-        from ce_as_vm_tags import CORE_TAG, UI_TAG
+        from ce_as_vm_tags import CORE_TAG, UI_TAG, MONGO_TAG, RABBITMQ_TAG
 
         AVAILABLE_INPUTS["CORE_TAG"] = CORE_TAG
         AVAILABLE_INPUTS["UI_TAG"] = UI_TAG
+        AVAILABLE_INPUTS["MONGO_TAG"] = MONGO_TAG
+        AVAILABLE_INPUTS["RABBITMQ_TAG"] = RABBITMQ_TAG
+        LATEST_TAG_AND_VERSION["CORE_TAG"] = CORE_TAG
+        LATEST_TAG_AND_VERSION["UI_TAG"] = UI_TAG
+        LATEST_TAG_AND_VERSION["MONGO_TAG"] = MONGO_TAG
+        LATEST_TAG_AND_VERSION["RABBITMQ_TAG"] = RABBITMQ_TAG
     except Exception:
         pass
 
@@ -1530,7 +1628,7 @@ def check_and_apply_file_permissions():
             CHECKS["MONGO"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
+                command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
                 set_directory_permission("data/mongo-data", command)
                 print_pass(
                     f"Changing owner of data/mongo-data to user with uid {MONGO_USER_ID}"
@@ -1539,7 +1637,7 @@ def check_and_apply_file_permissions():
 
             # mongo_data directory file
             try:
-                command = "sudo chmod -R 744 data/mongo-data"
+                command = f"{SUDO_PREFIX} chmod -R 744 data/mongo-data"
                 set_directory_permission("data/mongo-data", command)
                 print_pass(f"Adding read/write permissions to data/mongo-data")
                 CHECKS["MONGO-FILE"] = Status.PASS
@@ -1563,7 +1661,7 @@ def check_and_apply_file_permissions():
             CHECKS["MONGO-INIT"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/database-init"
+                command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/database-init"
                 set_directory_permission("data/database-init", command)
                 print_pass(
                     f"Changing owner of data/database-init/mongo-init.sh to user with uid {MONGO_USER_ID}"
@@ -1572,7 +1670,7 @@ def check_and_apply_file_permissions():
 
             # mongo-init.sh permissions check
             try:
-                command = "sudo chmod -R 775 data/database-init"
+                command = f"{SUDO_PREFIX} chmod -R 775 data/database-init"
                 set_directory_permission("data/database-init", command)
                 print_pass(
                     "Adding read/write permissions to data/database-init/mongo-init.sh"
@@ -1603,7 +1701,7 @@ def check_and_apply_file_permissions():
             CHECKS["CUSTOM_PLUGINS"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                command = "sudo chown -R 1001:1001 data/custom_plugins"
+                command = f"{SUDO_PREFIX} chown -R 1001:1001 data/custom_plugins"
                 set_directory_permission("data/custom_plugins", command)
                 print_pass(
                     f"Changing owner of data/custom_plugins to user with uid 1001"
@@ -1611,7 +1709,7 @@ def check_and_apply_file_permissions():
                 CHECKS["CUSTOM_PLUGINS"] = Status.PASS
 
             try:
-                command = "sudo chmod -R 755 data/custom_plugins"
+                command = f"{SUDO_PREFIX} chmod -R 755 data/custom_plugins"
                 set_directory_permission("data/custom_plugins", command)
                 print_pass(
                     "Adding read/write permissions to data/custom_plugins"
@@ -1639,27 +1737,27 @@ def check_and_apply_file_permissions():
             CHECKS["SSL_CERTS"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                command = "sudo chown -R 1001:1001 data/ssl_certs"
+                command = f"{SUDO_PREFIX} chown -R 1001:1001 data/ssl_certs"
                 set_directory_permission("data/ssl_certs", command)
                 print_pass(
                     f"Changing owner of data/ssl_certs to user with uid 1001"
                 )
                 CHECKS["SSL_CERTS"] = Status.PASS
 
-            command = "sudo chmod 755 data/ssl_certs"
+            command = f"{SUDO_PREFIX} chmod 755 data/ssl_certs"
             set_directory_permission("data/ssl_certs", command)
             print_pass(f"Adding read/write permissions to data/ssl_certs")
             CHECKS["SSL_CERTS"] = Status.PASS
 
         if os.path.exists("data/ssl_certs/cte_cert.crt"):
-            command = "sudo chmod 644 data/ssl_certs/cte_cert.crt"
+            command = f"{SUDO_PREFIX} chmod 644 data/ssl_certs/cte_cert.crt"
             set_directory_permission("data/ssl_certs/cte_cert.crt", command)
             print_pass(
                 f"Adding read permissions to data/ssl_certs/cte_cert.crt"
             )
 
         if os.path.exists("data/ssl_certs/cte_cert_key.key"):
-            command = "sudo chmod 644 data/ssl_certs/cte_cert_key.key"
+            command = f"{SUDO_PREFIX} chmod 644 data/ssl_certs/cte_cert_key.key"
             set_directory_permission(
                 "data/ssl_certs/cte_cert_key.key", command
             )
@@ -1682,15 +1780,15 @@ def check_and_apply_file_permissions():
             CHECKS["RABBITMQ"] = Status.FAIL
         else:
             if platform.system().lower() not in ["darwin"]:
-                command = "sudo chown -R 1001:1001 data/rabbitmq"
+                command = f"{SUDO_PREFIX} chown -R 1001:1001 data/rabbitmq"
                 set_directory_permission("data/rabbitmq", command)
                 print_pass(
                     "Changing owner of data/rabbitmq to user with uid 1001"
                 )
                 CHECKS["RABBITMQ"] = Status.PASS
-            command = "sudo chmod -R 744 data/rabbitmq"
+            command = f"{SUDO_PREFIX} chmod -R 744 data/rabbitmq"
             set_directory_permission("data/rabbitmq", command)
-            command = "sudo chmod 755 data/rabbitmq"
+            command = f"{SUDO_PREFIX} chmod 755 data/rabbitmq"
             set_directory_permission("data/rabbitmq", command)
             print_pass("Adding read permissions to data/rabbitmq")
             CHECKS["RABBITMQ"] = Status.PASS
@@ -1707,9 +1805,9 @@ def check_and_apply_file_permissions():
             )
             CHECKS["ca_certs"] = Status.FAIL
         else:
-            command = "sudo chmod -R 644 data/ca_certs/"
+            command = f"{SUDO_PREFIX} chmod -R 644 data/ca_certs/"
             set_directory_permission("data/ca_certs", command)
-            command = "sudo chmod 755 data/ca_certs"
+            command = f"{SUDO_PREFIX} chmod 755 data/ca_certs"
             set_directory_permission("data/ca_certs", command)
             print_pass(f"Adding read permissions to data/ca_certs")
             CHECKS["ca_certs"] = Status.PASS
@@ -1727,7 +1825,7 @@ def check_and_apply_file_permissions():
             )
             CHECKS["START"] = Status.FAIL
         else:
-            command = "sudo chmod 555 ./start"
+            command = f"{SUDO_PREFIX} chmod 555 ./start"
             set_directory_permission("start", command)
             print_pass(f"Adding execute permissions to start script")
             CHECKS["START"] = Status.PASS
@@ -1746,7 +1844,7 @@ def check_and_apply_file_permissions():
             )
             CHECKS["STOP"] = Status.FAIL
         else:
-            command = "sudo chmod 555 ./stop"
+            command = f"{SUDO_PREFIX} chmod 555 ./stop"
             set_directory_permission("stop", command)
             print_pass(f"Adding execute permissions to stop script")
             CHECKS["STOP"] = Status.PASS
@@ -1847,7 +1945,7 @@ def migrate_mongo():
 
             # Change owner to 1001 after copying the data
             if platform.system().lower() not in ["darwin"]:
-                command = f"sudo chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
+                command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
                 set_directory_permission("data/mongo-data", command)
         except Exception as exc:
             print(f"Error while migrating mongo-data: {exc}")
@@ -1986,7 +2084,7 @@ def change_maintenance_password(raw_text: str, forward=True):
             processed_stream = out.decode().strip()
             # generate mpass
             if forward:
-                second_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter 10000"""
+                second_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -A -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter 10000"""
                 second_process = subprocess.Popen(
                     second_command,
                     shell=True,
@@ -1999,7 +2097,7 @@ def change_maintenance_password(raw_text: str, forward=True):
                 else:
                     raise Exception(f"{sec_err.decode('utf-8')}\n")
             else:
-                third_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -d -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter 10000"""
+                third_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -A -d -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter 10000"""
                 third_process = subprocess.Popen(
                     third_command,
                     shell=True,
@@ -2595,7 +2693,7 @@ def set_up_ha_values():
                 else:
                     dest_location = "."
                     env_file_location = ".env.keys"
-                command = f"sudo mv {AVAILABLE_INPUTS.get('LOCATION', None)} {dest_location}"
+                command = f"{SUDO_PREFIX} mv {AVAILABLE_INPUTS.get('LOCATION', None)} {dest_location}"
                 execute_shell_command(command)
                 AVAILABLE_INPUTS["LOCATION"] = env_file_location
             return
@@ -2616,7 +2714,7 @@ def set_up_ha_values():
                 "/etc/.env.keys",
             ]:
                 command = (
-                    f"sudo mv {AVAILABLE_INPUTS.get('LOCATION')} {location}/"
+                    f"{SUDO_PREFIX} mv {AVAILABLE_INPUTS.get('LOCATION')} {location}/"
                 )
                 execute_shell_command(command)
                 AVAILABLE_INPUTS["LOCATION"] = f"{location}/.env.keys"
@@ -2651,9 +2749,10 @@ def mongo_feature_compatibility(maintenance_password):
     """
     Make mongo data compatibility when migrating from older to newer version.
     """
+    current_version = get_existing_variable_value(".env", "MONGO_CURRENT_VERSION")
     is_mongo_compatible = (
         True
-        if get_existing_variable_value(".env", "MONGO_COMPATIBILITY") == "True"
+        if current_version and compare_versions(current_version, MONGO_LATEST_VERSION)
         else False
     )
     mongo_data_path = "data/mongo-data/data/db/"
@@ -2667,7 +2766,7 @@ def mongo_feature_compatibility(maintenance_password):
             AVAILABLE_INPUTS.get("CORE_HTTP_PROXY", ""),
             AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", ""),
         )
-    AVAILABLE_INPUTS["MONGO_COMPATIBILITY"] = True
+    AVAILABLE_INPUTS["MONGO_CURRENT_VERSION"] = MONGO_LATEST_VERSION
 
 
 def is_selinux_enabled():
@@ -2923,6 +3022,7 @@ def run():
                 )
         fetch_container_info()
         create_env_if_not_exist()
+        set_sudo_prefix()
         if location:
             check_python_prerequisites()
             get_all_existed_env_variable()  # Get local env variables
