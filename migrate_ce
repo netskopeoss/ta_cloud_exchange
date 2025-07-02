@@ -114,7 +114,7 @@ shared_drive_path = None
 maintenance_password = None
 ce_as_a_vm_dest = False
 envs = None
-latest_version = "5.1.0"
+latest_version = "5.1.2"
 
 
 def read_env_file(file_path):
@@ -841,32 +841,11 @@ options_steps_mapping = {
 
 if __name__ == "__main__":
     atexit.register(on_exit)
-    # message = (
-    #     f"{Color.RED}{Color.BOLD}Note:- If you are proceeding for the "
-    #     "Standalone to HA or HA to HA migration, Please make sure "
-    #     "\n\t\tthat the shared drive is mounted on the destination machine"
-    #     " which will be used in the HA and\n\t\t make sure all the services"
-    #     " are up and running. Currently we do not support "
-    #     f"HA to Standalone migration.{Color.END}"
-    # )
-    # print_with_color(
-    #     f"""
-    #     {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
-
-    #     {message}
-
-    #     {Color.BOLD}Select the option:
-    #         1. Migrate to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone.
-    #         2. Migrate to v5.1.0 HA from v4.2.0 or v5.0.x Standalone.
-    #         3. Migrate to v5.1.0 HA from v5.0.0 or v5.0.1 HA
-    #     """,
-    #     Color.BOLD
-    # )
     print_with_color(
         f"""
         {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
 
-        {Color.GREEN}{Color.BOLD}Migrating to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone (Containerised or CE as a VM).
+        {Color.GREEN}{Color.BOLD}Migrating to v{latest_version} Standalone from v5.x Standalone (Containerised or CE as a VM).
         """,
         Color.BOLD
     )

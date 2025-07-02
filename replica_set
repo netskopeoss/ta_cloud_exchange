@@ -38,7 +38,7 @@ def change_maintenance_password(raw_text: str, forward=True):
             processed_stream = out.decode().strip()
             # generate mpass
             if forward:
-                second_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter {ITER_COUNT}"""
+                second_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -A -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter {ITER_COUNT}"""
                 second_process = subprocess.Popen(
                     second_command,
                     shell=True,
@@ -51,7 +51,7 @@ def change_maintenance_password(raw_text: str, forward=True):
                 else:
                     raise Exception(f"{sec_err.decode('utf-8')}\n")
             else:
-                third_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -d -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter {ITER_COUNT}"""
+                third_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -A -d -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter {ITER_COUNT}"""
                 third_process = subprocess.Popen(
                     third_command,
                     shell=True,
