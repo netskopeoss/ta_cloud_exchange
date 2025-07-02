@@ -33,7 +33,7 @@ fi
 RHEL=$(hostnamectl | grep "Operating System:" | sed 's/Operating System://')
 
 decrypt() {
-    echo "$1" | openssl enc -aes-256-cbc -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
+    echo "$1" | openssl enc -aes-256-cbc -A -d -a -S $CE_HEX_CODE -K "$2" -iv $CE_IV -pbkdf2 -iter 10000
 }
 
 
