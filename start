@@ -1,13 +1,19 @@
 #!/bin/sh
+set -a
 
+[ -f "./.env" ] || (echo "Could not find .env file in current directory. Executing setup script" && ./setup $*) || (echo "Setup script failed" && rm -f .env && exit 1)
 . ./.env
+. ${ENV_FILE}
 set -e
 
 DB_VERSION_ENV_FILE_LOCATION="./.env.ceversion"
+VENV_DIR=".cevenv"
+ACTIVATE_SCRIPT_PATH="${VENV_DIR}/bin/activate"
+
 if [ -n "${HA_NFS_DATA_DIRECTORY}" ]; then
-    . ${HA_NFS_DATA_DIRECTORY}/config/.env
     DB_VERSION_ENV_FILE_LOCATION="${HA_NFS_DATA_DIRECTORY}/config/.env.ceversion"
 fi
+set +a
 
 if [ -f "/.cloud_exchange_vm.marker" ]; then
     file_path="/opt/cloudexchange/containers/ce_containers.tar"
@@ -17,6 +23,19 @@ if [ -f "/.cloud_exchange_vm.marker" ]; then
             sleep 5
         done
         echo "Successfully imported Cloud Exchange images..."
+    fi
+fi
+
+if [ -n "${HA_IP_LIST}" ]; then
+    # Check if virtual environment already exists
+    if [ -d "${VENV_DIR}" ] && [ -f "${ACTIVATE_SCRIPT_PATH}" ]; then
+        echo "Virtual environment '$VENV_DIR' already exists."
+        echo "Using existing virtual environment."
+        echo "${ACTIVATE_SCRIPT_PATH}"
+        . "${ACTIVATE_SCRIPT_PATH}"
+    else
+        echo "Virtual environment '${VENV_DIR}' or '${ACTIVATE_SCRIPT_PATH}' does not exist, Please run setup first."
+        exit 1
     fi
 fi
 
@@ -103,3 +122,5 @@ if [ -n "${HA_IP_LIST}" ]; then
         compose_command exec -- rabbitmq-stats rabbitmq-queues add_member cloudexchange_3 rabbit@$HA_CURRENT_NODE
     fi
 fi
+
+echo "Cloud Exchange will start in few minutes and will be accessible on $UI_PROTOCOL://<HOST_IP/FQDN>:$UI_PORT"

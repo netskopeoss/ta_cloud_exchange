@@ -11,15 +11,12 @@ Release checklist:
     - INSTALL_VERSION
 """
 from enum import Enum
-from getpass import getpass
 import os
 import json
 import argparse
-import stat as st
 import ipaddress
 from secrets import token_bytes
 from base64 import b64encode
-from os import stat
 import re
 import socket
 import shutil
@@ -28,15 +25,42 @@ import platform
 import urllib.request
 import urllib.parse
 import urllib.error
+import uuid
 import time
 import multiprocessing
 import sys
 import random
+import io
 import string
-import readline
-from urllib.parse import urlparse
 
-SECRET_FILE_NAME = ".env.keys"
+from data.management_server.utils import (
+    RECOMMENDED_HOST_OS,
+    AVAILABLE_INPUTS,
+    SUDO_PREFIX,
+    GLUSTERFS_BASE_PORT,
+    GLUSTERFS_MAX_PORT,
+    CLOUD_EXCHANGE_CONFIG,
+    CLOUD_EXCHANGE_CONFIG_KEYS,
+    print_fail,
+    print_warning,
+    print_pass,
+    set_proxy,
+    read_cloud_exchange_config_file,
+    create_secret_file,
+    set_directory_permission,
+    change_maintenance_password,
+    install_gluster,
+    ensure_volume_mounted,
+    verify_start_create_volume,
+    ce_as_vm_check,
+    get_secret_location,
+    set_sudo_prefix,
+    ClientExceptions,
+    ServerExceptions,
+    configure_logger,
+    update_cloudexchange_config,
+)
+
 DEFAULT_INPUTS = {
     "CORE_TAG": {
         "default": "crestsystems/netskope:core-latest",
@@ -59,21 +83,27 @@ DEFAULT_INPUTS = {
         "help": "",
     },
     "UI_PORT": {
-        "default": 80,
-        "skip": False,
+        "default": 443,
+        "skip": True,
         "help": "",
         "user_input": "Enter the port on which you want to access the Netskope CE UI",
     },
+    "CE_MANAGEMENT_PORT": {
+        "default": 8000,
+        "skip": False,
+        "help": "",
+        "user_input": "Enter the port on which you want to start CE management server",
+    },
     "JWT_SECRET": {
         "default": "",
-        "skip": False,
+        "skip": True,
         "help": "",
         "mandatory": True,
         "user_input": "Enter a JWT Secret which will be used for signing the authentication tokens",
     },
     "MAINTENANCE_PASSWORD": {
         "default": "",
-        "skip": False,
+        "skip": True,
         # "help": "Enter maintenance password that will be used for docker services. This password can be set only once. ",
         "help": "",
         "mandatory": True,
@@ -94,9 +124,9 @@ DEFAULT_INPUTS = {
     },
     "PULL_THREADS": {"default": 4, "skip": True, "help": ""},
     "MAX_WAIT_ON_LOCK_IN_MINUTES": {"default": 240, "skip": True, "help": ""},
-    "ENABLE_TLS_V_1_2": {
-        "default": "No",
-        "skip": False,
+    "TLS_VERSION": {
+        "default": "TLSv1.3",
+        "skip": True,
         "help": "",
         "user_input": "Do you want to enable TLSv1.2 along with TLSv1.3 for CE UI",
     },
@@ -113,7 +143,7 @@ DEFAULT_INPUTS = {
     "CONTAINERIZATION_PLATFORM": {"default": "", "skip": True, "help": ""},
     "COMPOSE_VERSION": {"default": "", "skip": True, "help": ""},
     "HOST_OS": {"default": "", "skip": True, "help": ""},
-    "PLATFORM_PROVIDER": {"default": "unknown", "skip": True, "help": ""},
+    "PLATFORM_PROVIDER": {"default": "custom", "skip": True, "help": ""},
     "PROMOTION_BANNERS_FILE_LOCATION": {
         "default": "https://raw.githubusercontent.com/netskopeoss/ta_cloud_exchange/main/ce_promotions.json",
         "skip": True,
@@ -122,20 +152,20 @@ DEFAULT_INPUTS = {
     "CE_SETUP_ID": {"default": "", "skip": True, "help": ""},
     "CE_HEX_CODE": {"default": "", "skip": True, "help": ""},
     "CE_IV": {"default": "", "skip": True, "help": ""},
+    "CE_SSL_CERTIFICATE_PASSWORD": {"default": "", "skip": True, "help": ""},
+    "ENV_FILE": {"default": "./.env", "skip": True, "help": ""},
 }
-AVAILABLE_INPUTS = {}
 LATEST_TAG_AND_VERSION = {
-    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core5-5.1.2",
-    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui5-5.1.2",
-    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo8-8.0.6",
-    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq4-4.1.0",
+    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core6-6.0.0-beta",
+    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui6-6.0.0-beta",
+    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo8-8.0.12",
+    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq4-4.1.3",
     "BETA_OPT_IN": "No",
     "CORE_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:core5-latest",
     "UI_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:ui5-latest",
-    "INSTALL_VERSION": "5.1.2",
+    "INSTALL_VERSION": "6.0.0-beta.1",
 }
 CHECKS = {}
-
 MIN_CPU = 8
 MIN_MEM_KB = 0.90 * 16 * 1024**2  # 90% of 16 GB
 MEDIUM_PROFILE_REQUIREMENTS = [
@@ -181,12 +211,14 @@ MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 MIN_OPENSSL_VERSION = "1.1.1"
 
 N = 5
+VENV_DIR = ".cevenv"
+MIN_PYTHON_MAJOR = 3
+MIN_PYTHON_MINOR = 8
 MIN_HA_SUPPORTED_VERSION = "5.0.0"
-RECOMMENDED_DOCKER_VERSION = "28.0.0"
-RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.27.0"
-RECOMMENDED_PODMAN_VERSION = "4.6.1"
-RECOMMENDED_PODMAN_COMPOSE_VERSION = "1.0.6"
-RECOMMENDED_HOST_OS = ["Ubuntu 20", "Ubuntu 22", "RHEL 8", "RHEL 9"]
+RECOMMENDED_DOCKER_VERSION = "28.3.2"
+RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.39.0"
+RECOMMENDED_PODMAN_VERSION = "4.9.5"
+RECOMMENDED_PODMAN_COMPOSE_VERSION = "1.5.0"
 
 GIT_PLUGIN_REPO = (
     "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
@@ -196,8 +228,10 @@ MONGO_USER_ID = 1001
 OLD_MONGO_USER_ID = 999
 MONGO_MIGRATION_TIMEOUT = 60
 MONGO_LATEST_VERSION = "8.0"
-SUDO_PREFIX = ""
+CLOUD_EXCHANGE_LINUX_SERVICE_NAME = "cloud-exchange"
+
 is_ui_running = False
+is_management_service_running = False
 is_rabbitmq_running = False
 is_mongodb_running = False
 is_ha = False
@@ -205,6 +239,7 @@ CONTAINERIZATION_PLATFORM = None
 COMPOSE_VERSION = None
 HOST_OS = None
 should_ignore = False
+avoid_service_restart = False
 RABBITMQ_FEATURE_FLAGS = """[classic_mirrored_queue_version,
  classic_queue_type_delivery_support,
  detailed_queues_endpoint,
@@ -256,18 +291,6 @@ def print_banner():
     )
 
 
-def print_warning(message):
-    print(f"\033[1;93m[!] \033[0;37m{message}")
-
-
-def print_fail(message):
-    print(f"\033[1;31m[F] \033[1;37m{message}\033[0;37m")
-
-
-def print_pass(message):
-    print(f"\033[0;32m[P] \033[0;37m{message}")
-
-
 def compare_versions(version1, version2):
     versions1 = [int(v) for v in version1.split(".")]
     versions2 = [int(v) for v in version2.split(".")]
@@ -279,7 +302,6 @@ def compare_versions(version1, version2):
         elif v1 < v2:
             return False
     return True
-
 
 def compare_ce_versions(v1, v2):
     """
@@ -323,16 +345,6 @@ def compare_ce_versions(v1, v2):
     else:
         return 1
 
-def set_sudo_prefix():
-    global SUDO_PREFIX
-    if hasattr(os, 'geteuid'):
-        euid = os.geteuid()
-        if euid == 0:
-            SUDO_PREFIX = ""
-        else:
-            SUDO_PREFIX = "sudo"
-    else:
-        SUDO_PREFIX = "sudo"
 
 def _get_container_name(container_info):
     container_name = container_info.get("Names", "")
@@ -351,10 +363,27 @@ def strtobool(val):
         raise ValueError("invalid truth value %r" % (val,))
 
 
-def ce_as_vm_check():
-    return os.path.exists("/.cloud_exchange_vm.marker") and os.path.exists(
-        "./ce_as_vm_tags.py"
-    )
+def generate_random_password(length=32):
+    chars = string.ascii_letters + string.digits
+    return "".join(random.choice(chars) for _ in range(length))
+
+
+def get_tls_version(version_string):
+    versions = version_string.split(',') if version_string else []
+    tls_versions = []
+    allowed_values = CLOUD_EXCHANGE_CONFIG_KEYS.get("TLS_VERSION", {}).get("allowed_values", [])
+    for version in versions:
+        version = version.strip()
+        if version in allowed_values:
+            tls_versions.append(f"TLSv{version}")
+        else:
+            print_warning(f"Invalid TLS version: {version}. Skipping.")
+    if not tls_versions:
+        return tls_versions.append(CLOUD_EXCHANGE_CONFIG_KEYS.get("TLS_VERSION", {}).get("default", "TLSv1.3"))
+
+    tls_versions = " ".join(tls_versions)
+    tls_versions = f'"{tls_versions}"'
+    return tls_versions
 
 
 def fetch_container_info():
@@ -396,6 +425,25 @@ def fetch_container_info():
         print_warning("Unable to fetch container information.")
 
 
+def check_management_service_running():
+    global is_management_service_running
+    try:
+        p = subprocess.Popen(
+            ["systemctl", "is-active", CLOUD_EXCHANGE_LINUX_SERVICE_NAME],
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
+        )
+        out, err = p.communicate()
+        if err:
+            raise Exception("Unable to fetch management service information.")
+        status = out.decode("utf-8").splitlines()[0].strip()
+        print("Management service status: " + status)
+        is_management_service_running = status.lower() == "active"
+    except Exception:
+        print_warning("Unable to fetch management service information.")
+
+
 def put_proxy_in_env(location=".env"):
     try:
         with open(location, "w") as f:
@@ -405,33 +453,24 @@ def put_proxy_in_env(location=".env"):
         raise Exception(f"Error occurred while putting proxy variables: {e}")
 
 
-def create_secret_file(passwords, location):
-    mpass_without_quote = passwords["MAINTENANCE_PASSWORD"][1:-1]
-    mpass = change_maintenance_password(mpass_without_quote)
-    passwords["MAINTENANCE_PASSWORD"] = change_maintenance_password(passwords["MAINTENANCE_PASSWORD"])
-    passwords["MAINTENANCE_PASSWORD_ESCAPED"] = change_maintenance_password(passwords["MAINTENANCE_PASSWORD_ESCAPED"])
-    passwords["RABBITMQ_DEFAULT_PASS"] = mpass
-    passwords["MONGO_INITDB_ROOT_PASSWORD"] = mpass
-    passwords["MONGODB_PASSWORD"] = mpass
-
+def upsert_secret_file(update_dictionary, location):
+    if not update_dictionary:
+        return
+    with open(location, "r") as f:
+        lines = f.readlines()
+        for key, value in update_dictionary.items():
+            value = change_maintenance_password(value)
+            updated = False
+            for i, line in enumerate(lines):
+                if line.startswith(f"{key}="):
+                    lines[i] = f"{key}={value}\n"
+                    updated = True
+            if not updated:
+                lines.append(f"{key}={value}\n")
     with open(location, "w") as f:
-        for key, value in passwords.items():
-            f.write(f"{key}={value}\n")
-    command = f"{SUDO_PREFIX} chmod 400 {location}"
+        f.writelines(lines)
+    command = f"{SUDO_PREFIX} chmod 444 {location}"
     set_directory_permission(location, command)
-
-
-def get_secret_location(inputs):
-    secret_location = SECRET_FILE_NAME
-    if ce_as_vm_check():
-        secret_location = f"/etc/{SECRET_FILE_NAME}"
-    if "HA_IP_LIST" in inputs.keys():
-        secret_location = (
-            inputs.get("HA_NFS_DATA_DIRECTORY", None) + f"/{SECRET_FILE_NAME}"
-            if inputs.get("HA_NFS_DATA_DIRECTORY", None)
-            else None
-        )
-    return secret_location
 
 
 def put_env_variable(inputs, location=".env"):
@@ -440,7 +479,6 @@ def put_env_variable(inputs, location=".env"):
     inputs.pop("CURRENT_DATABASE_VERSION", None)
     if location != ".env":
         inputs.pop("HA_CURRENT_NODE", None)
-        inputs.pop("HA_NFS_DATA_DIRECTORY", None)
         inputs.pop("MONGO_CURRENT_VERSION", None)
     try:
         if (
@@ -484,9 +522,16 @@ def put_env_variable(inputs, location=".env"):
                 inputs["CE_SETUP_ID"] = AVAILABLE_INPUTS["CE_SETUP_ID"]
                 inputs["CE_HEX_CODE"] = AVAILABLE_INPUTS["CE_HEX_CODE"]
                 inputs["CE_IV"] = AVAILABLE_INPUTS["CE_IV"]
+        if secret_location:
+            update_secrets = {}
+            ce_ssl_certificate_password = inputs.get("CE_SSL_CERTIFICATE_PASSWORD")
+            if ce_ssl_certificate_password:
+                update_secrets["CE_SSL_CERTIFICATE_PASSWORD"] = ce_ssl_certificate_password
+            upsert_secret_file(update_secrets, secret_location)
         inputs.pop("MAINTENANCE_PASSWORD", None)
         inputs.pop("MAINTENANCE_PASSWORD_ESCAPED", None)
         inputs.pop("MONGO_COMPATIBILITY", None)
+        inputs.pop("CE_SSL_CERTIFICATE_PASSWORD", None)
         with open(location, "w") as f:
             for key, value in inputs.items():
                 f.write(f"{key}={value}\n")
@@ -503,7 +548,7 @@ def create_env_if_not_exist(location=".env"):
 
 
 def execute_shell_command(command, **kwargs):
-    """Function to exectute shell command using python script."""
+    """Function to execute shell command using python script."""
     p = None
     try:
         p = subprocess.check_output(command, shell=True, **kwargs)
@@ -537,8 +582,8 @@ def create_mongo_container(
     execute_shell_command(create_container)
 
 
-def remove_mongo_contianer(deployment, temp_mongo_container_name):
-    """Remove mongodb contianer."""
+def remove_mongo_container(deployment, temp_mongo_container_name):
+    """Remove mongodb container."""
     remove_container = (
         f"{deployment} rm -f {temp_mongo_container_name} >/dev/null 2>&1"
     )
@@ -554,7 +599,7 @@ def execute_mongodb_command(
     eval_command,
     **kwargs,
 ):
-    """Execute command inside mongodb contianer."""
+    """Execute command inside mongodb container."""
     compatibility_command = f"{deployment} exec {temp_mongo_container_name} {shell} -u root --password {maintenance_password} admin --eval {eval_command}"
     execute_shell_command(compatibility_command, **kwargs)
 
@@ -569,7 +614,7 @@ def run_temp_mongo_container_for_migration(
     deployment = None
     MONGO_MIGRATE_IMAGE = "mongo:5.0.21"
     MONGO_TEMP_IMAGE_ONE = "mongo:6.0.12"
-    MONGO_TEMP_IMAGE_TWO= "mongo:7.0.16"
+    MONGO_TEMP_IMAGE_TWO = "mongo:7.0.16"
     MONGO_CURRENT_IMAGE = LATEST_TAG_AND_VERSION["MONGO_TAG"]
     temp_mongo_container_name = "mongo-migration"
 
@@ -579,9 +624,9 @@ def run_temp_mongo_container_for_migration(
         deployment = "docker"
 
     # If from previous temp container is still running then kill that container and start again.
-    remove_mongo_contianer(deployment, temp_mongo_container_name)
+    remove_mongo_container(deployment, temp_mongo_container_name)
 
-    # create mongo contianer
+    # create mongo container
     create_mongo_container(
         deployment,
         maintenance_password,
@@ -607,7 +652,7 @@ def run_temp_mongo_container_for_migration(
         # remove above container
         pass
     time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
-    remove_mongo_contianer(deployment, temp_mongo_container_name)
+    remove_mongo_container(deployment, temp_mongo_container_name)
     # spin latest mongo version to check compatibility
     create_mongo_container(
         deployment,
@@ -634,7 +679,7 @@ def run_temp_mongo_container_for_migration(
         # remove above container
         pass
     time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
-    remove_mongo_contianer(deployment, temp_mongo_container_name)
+    remove_mongo_container(deployment, temp_mongo_container_name)
     # spin latest mongo version to check compatibility
     create_mongo_container(
         deployment,
@@ -660,7 +705,7 @@ def run_temp_mongo_container_for_migration(
     except Exception:
         # remove above container
         time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
-        remove_mongo_contianer(deployment, temp_mongo_container_name)
+        remove_mongo_container(deployment, temp_mongo_container_name)
         # update ownership since with CE v5.1.2 mongo custom image has 1001 id
         if platform.system().lower() not in ["darwin"]:
             command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
@@ -686,7 +731,7 @@ def run_temp_mongo_container_for_migration(
         )
 
     time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
-    remove_mongo_contianer(deployment, temp_mongo_container_name)
+    remove_mongo_container(deployment, temp_mongo_container_name)
     # update ownership since with CE v5.1.2 mongo custom image has 1001 id
     if platform.system().lower() not in ["darwin"]:
         command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
@@ -723,41 +768,33 @@ def get_all_existed_env_variable(location=".env", override=True):
         raise Exception(f"Error occurred while getting env variables: {e}")
 
 
-def set_directory_permission(directory, command):
-    p = None
+def _get_cert_location(crt_postfix="cte_cert", is_pem=False, with_ca=False, from_local=False):
+    ha_nfs_dir = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY")
+    base_path = f"{ha_nfs_dir}/config/ssl_certs" if (ha_nfs_dir and not from_local) else "data/ssl_certs"
+
+    cert_file = f"{base_path}/{crt_postfix}.crt"
+    key_file = f"{base_path}/{crt_postfix}_key.key"
+    pem_file = f"{base_path}/{crt_postfix}_key.pem" if is_pem else None
+
+    if with_ca:
+        ca_key = f"{base_path}/{crt_postfix}_ca.key"
+        ca_crt = f"{base_path}/{crt_postfix}_ca.crt"
+        return cert_file, key_file, pem_file, ca_key, ca_crt
+
+    return cert_file, key_file, pem_file, None, None
+
+
+def check_for_certs(crt_postfix, is_pem=False, with_ca=False, from_local=False):
     try:
-        p = subprocess.Popen(
-            command.split(),
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stdin=subprocess.PIPE,
+        cert_file, key_file, pem_file, ca_key, ca_crt = _get_cert_location(
+            crt_postfix=crt_postfix, is_pem=is_pem, with_ca=with_ca, from_local=from_local
         )
-        out, err = p.communicate()
-        if len(err) <= 0:
-            return
-        else:
-            raise Exception(err.decode("utf-8"))
-    except Exception as e:
-        if p:
-            p.kill()
-        raise Exception(
-            f"Error occurred while setting file permissions for {directory}. Error: {e}"
-        )
-
-
-def _get_cert_location():
-    cert_file = "data/ssl_certs/cte_cert.crt"
-    key_file = "data/ssl_certs/cte_cert_key.key"
-    if AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY"):
-        cert_file = f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs/cte_cert.crt"
-        key_file = f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs/cte_cert_key.key"
-    return cert_file, key_file
-
-
-def check_for_certs():
-    try:
-        cert_file, key_file = _get_cert_location()
-        if os.path.isfile(cert_file) and os.path.isfile(key_file):
+        if (
+            os.path.isfile(cert_file)
+            and os.path.isfile(key_file)
+            and (not is_pem or os.path.isfile(pem_file))
+            and (not with_ca or (os.path.isfile(ca_crt) and os.path.isfile(ca_key)))
+        ):
             return True
         return False
     except Exception as e:
@@ -766,13 +803,83 @@ def check_for_certs():
         )
 
 
-def create_self_signed_ssl_certs():
-    try:
-        cert_file, key_file = _get_cert_location()
-        print(
-            f"Generating self signed certificate with validity of one year..."
+def common_ca_self_signed_ssl(ca_key, ca_crt, tls_conf, tls_cert_cert, tls_cert_csr, tls_cert_key, tls_cert_key_pem, common_ca_conf):
+    if not os.path.exists(ca_key):
+        # Generate self-signed CA certificate
+        print(f"ca key not found at {ca_key}, generating new one.")
+        command = f"openssl genrsa -out {ca_key} 4096"
+        p = subprocess.Popen(
+            command.split(),
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
         )
-        command = f"openssl req -x509 -newkey rsa:4096 -keyout {key_file} -out {cert_file} -sha256 -days 365 -nodes -subj /CN=localhost -extensions extendedkeyusage -config data/ssl_certs/extendedkeyusage.txt"
+        _, err = p.communicate()
+        if p.returncode != 0:
+            raise Exception(f"{err.decode('utf-8')}\n")
+        else:
+            print(f"{err.decode('utf-8')}\n")
+    if not os.path.exists(ca_crt):
+        command = f"""openssl req -x509 -new -nodes -key {ca_key} -sha256 -days 3650 -out {ca_crt} \
+  -subj "/CN=CloudExchangeCA" \
+  -extensions v3_ca -config {common_ca_conf}
+  """
+
+        result = subprocess.run(command, shell=True, executable='/bin/bash', 
+                              capture_output=True, text=True, check=True)
+        err = result.stderr
+        if result.returncode != 0:
+            raise Exception(f"{err}\n")
+        else:
+            print(f"{err}\n")
+
+    command = f"openssl req -newkey rsa:4096 -nodes -keyout {tls_cert_key} -out {tls_cert_csr} -config {tls_conf}"
+    p = subprocess.Popen(
+        command.split(),
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+    )
+    _, err = p.communicate()
+    if p.returncode != 0:
+        raise Exception(f"{err.decode('utf-8')}\n")
+    else:
+        print(f"{err.decode('utf-8')}\n")
+    command = f"openssl x509 -req -in {tls_cert_csr} -CA {ca_crt} -CAkey {ca_key} -CAcreateserial -out {tls_cert_cert} -days 365 -extfile {tls_conf} -extensions req_ext"
+
+    p = subprocess.Popen(
+        command.split(),
+        stderr=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stdin=subprocess.PIPE,
+    )
+    _, err = p.communicate()
+    if p.returncode != 0:
+        raise Exception(f"{err.decode('utf-8')}\n")
+    else:
+        print(f"{err.decode('utf-8')}\n")
+
+    command = f"{SUDO_PREFIX} chmod 644 {ca_key} {ca_crt} {tls_cert_cert} {tls_cert_key}"
+    set_directory_permission(ca_key, command)
+
+    if tls_cert_key_pem:
+        with open(tls_cert_key_pem, "wb") as pem_out:
+            with open(tls_cert_cert, "rb") as cert_in:
+                shutil.copyfileobj(cert_in, pem_out)
+            with open(tls_cert_key, "rb") as key_in:
+                shutil.copyfileobj(key_in, pem_out)
+        command = f"{SUDO_PREFIX} chmod 644 {tls_cert_key_pem}"
+        set_directory_permission(tls_cert_key_pem, command)
+    base_path = os.path.dirname(ca_key)
+    recursive_chown(base_path, 1001, 1001)
+    print(f"Changing owner of {base_path} to user with uid 1001")
+
+
+def create_self_signed_ssl_certs(cert_file, key_file, extendedkeyusage_conf, combined_pem_file=False, pem_file=None):
+    import shutil
+    try:
+        print("Generating self signed certificate with validity of one year...")
+        command = f"openssl req -x509 -newkey rsa:4096 -keyout {key_file} -out {cert_file} -sha256 -days 365 -nodes -subj /CN=localhost -extensions extendedkeyusage -config {extendedkeyusage_conf}"
         p = subprocess.Popen(
             command.split(),
             stderr=subprocess.PIPE,
@@ -782,6 +889,15 @@ def create_self_signed_ssl_certs():
         out, err = p.communicate()
         if p.returncode == 0:
             print(f"{err.decode('utf-8')}\n")
+            # Combine cert and key into a single PEM file for MongoDB TLS
+            if combined_pem_file and pem_file:
+                with open(pem_file, "wb") as pem_out:
+                    with open(cert_file, "rb") as cert_in:
+                        shutil.copyfileobj(cert_in, pem_out)
+                    with open(key_file, "rb") as key_in:
+                        shutil.copyfileobj(key_in, pem_out)  
+                command = f"{SUDO_PREFIX} chmod 644 {pem_file}"
+                set_directory_permission(pem_file, command) 
             command = f"{SUDO_PREFIX} chmod 644 {cert_file}"
             set_directory_permission(cert_file, command)
             command_key = f"{SUDO_PREFIX} chmod 644 {key_file}"
@@ -793,6 +909,21 @@ def create_self_signed_ssl_certs():
         raise Exception(
             f"Error occurred while generating self-signed ssl certificates. Error: {e}"
         )
+
+
+def remove_unwanted_fields():
+    ha_env_fields = {
+        "HA_CURRENT_NODE",
+        "DESTINATION_PATH",
+        "HA_NFS_DATA_DIRECTORY",
+        "LOCATION",
+        "CE_SETUP_ID",
+        "CE_HEX_CODE",
+        "CE_IV",
+        "ENV_FILE",
+    }
+    for key in set(AVAILABLE_INPUTS) - ha_env_fields:
+        AVAILABLE_INPUTS.pop(key, None)
 
 
 def check_port_for_ha(ip, port, timeout=3):
@@ -845,10 +976,17 @@ def check_port_for_ha(ip, port, timeout=3):
     return is_port_open, is_service_running
 
 
-def check_for_ha_ports():
+def check_for_ha_ports(ha_ip_list, ha_current_node):
     try:
         port_flag = True
-        for port in [4369, 5672, 15672, 25672, 35672]:
+        try:
+            glusterfs_base_port = int(CLOUD_EXCHANGE_CONFIG.get("GLUSTERFS_BASE_PORT", GLUSTERFS_BASE_PORT))
+            glusterfs_max_port = int(CLOUD_EXCHANGE_CONFIG.get("GLUSTERFS_MAX_PORT", GLUSTERFS_MAX_PORT))
+        except Exception:
+            glusterfs_base_port = GLUSTERFS_BASE_PORT
+            glusterfs_max_port = GLUSTERFS_MAX_PORT
+
+        for port in [4369, 5671, 15671, 25672, 35672, 24007]:
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             result = sock.connect_ex(("127.0.0.1", port))
             if result == 0:
@@ -856,8 +994,19 @@ def check_for_ha_ports():
                     print_warning("RabbitMQ container is already running.")
                     break
                 else:
+                    if port == 24007:
+                        print_warning("Port 24007 is already in use, make sure it's being used by GlusterFS.")
+                        continue
                     print_fail(f"Port {port} is already in use.")
                     port_flag = False
+            else:
+                print_pass(f"Port {port} is available.")
+
+        for port in range(glusterfs_base_port, glusterfs_max_port + 1):
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            result = sock.connect_ex(("127.0.0.1", port))
+            if result == 0:
+                print_warning(f"Port {port} is already in use, make sure its used by GlusterFS.")
             else:
                 print_pass(f"Port {port} is available.")
 
@@ -878,18 +1027,29 @@ def check_for_ha_ports():
         print_warning(f"Could not verify Port information of the machine")
         CHECKS["Port Check"] = Status.NOT_VERIFIED
     port_error_msg = False
-    for host in AVAILABLE_INPUTS.get("HA_IP_LIST", "").split(","):
-        if host != AVAILABLE_INPUTS.get("HA_CURRENT_NODE"):
-            for port in [4369, 5672, 15672, 25672, 35672, 27017]:
+    for host in ha_ip_list.split(","):
+        if host != ha_current_node:
+            for port in [4369, 5671, 15671, 25672, 35672, 27017, 24007]:
                 is_port_open, _ = check_port_for_ha(host, port)
                 if not is_port_open:
                     print_fail(
-                        f"Port {port} of {host} is not reachable from {AVAILABLE_INPUTS.get('HA_CURRENT_NODE')}"
+                        f"Port {port} of {host} is not reachable from {ha_current_node}"
                     )
                     port_error_msg = True
                 else:
                     print_pass(
-                        f"Port {port} of {host} is reachable from {AVAILABLE_INPUTS.get('HA_CURRENT_NODE')}"
+                        f"Port {port} of {host} is reachable from {ha_current_node}"
+                    )
+            for port in range(glusterfs_base_port, glusterfs_max_port + 1):
+                is_port_open, _ = check_port_for_ha(host, port)
+                if not is_port_open:
+                    print_fail(
+                        f"Port {port} of {host} is not reachable from {ha_current_node}"
+                    )
+                    port_error_msg = True
+                else:
+                    print_pass(
+                        f"Port {port} of {host} is reachable from {ha_current_node}"
                     )
     if port_error_msg:
         print(
@@ -929,6 +1089,17 @@ def check_machine_specs():
     )
 
     # Check CPUs
+    print("Verifying CPU information...")
+    try:
+        if not cpu_supports_avx():
+            print_fail("CPU does not support AVX")
+            CHECKS["CPU AVX Support"] = Status.FAIL
+        else:
+            print_pass("CPU supports AVX")
+            CHECKS["CPU AVX Support"] = Status.PASS
+    except Exception:
+        print_warning("Could not verify CPU information of the machine...")
+        CHECKS["CPU AVX Support"] = Status.NOT_VERIFIED
     try:
         profile_name = None
         cpu_cores = multiprocessing.cpu_count()
@@ -1036,8 +1207,16 @@ def check_machine_specs():
     if is_ha or (
         AVAILABLE_INPUTS.get("HA_IP_LIST")
         and AVAILABLE_INPUTS.get("HA_CURRENT_NODE")
+    ) or (
+        CLOUD_EXCHANGE_CONFIG.get("HA_IP_LIST")
+        and CLOUD_EXCHANGE_CONFIG.get("HA_CURRENT_NODE")
     ):
-        check_for_ha_ports()
+        check_for_ha_ports(
+            ha_ip_list=AVAILABLE_INPUTS.get("HA_IP_LIST", "")
+            or CLOUD_EXCHANGE_CONFIG.get("HA_IP_LIST", ""),
+            ha_current_node=AVAILABLE_INPUTS.get("HA_CURRENT_NODE", "")
+            or CLOUD_EXCHANGE_CONFIG.get("HA_CURRENT_NODE", ""),
+        )
 
     if Status.FAIL in [
         CHECKS.get("Memory Check"),
@@ -1045,6 +1224,7 @@ def check_machine_specs():
         CHECKS.get("Free Disk Space Check"),
         CHECKS.get("CPU Check"),
         CHECKS.get("Port Check"),
+        CHECKS.get("CPU AVX Support"),
     ]:
         print(
             "\033[1;31mOne or more system requirement checks have failed. Please ensure the minimum system requirements are met to proceed further. \033[0;37m"
@@ -1057,6 +1237,7 @@ def check_machine_specs():
         CHECKS.get("Free Disk Space Check"),
         CHECKS.get("CPU Check"),
         CHECKS.get("Port Check"),
+        CHECKS.get("CPU AVX Support"),
     ]:
         exit(1)
 
@@ -1190,55 +1371,6 @@ def check_podman_versions():
         raise Exception("Podman not found")
 
 
-def validate_proxy(proxy, cur_proxy=None):
-    if proxy == "" and cur_proxy is not None and len(cur_proxy) > 0:
-        return True
-    regex = r"^(?:(.*))://(?:(.*))$"
-    result = re.search(regex, proxy)
-    if result is None:
-        print("Invalid Proxy Provided...")
-        return False
-    parts = result.groups()
-    if len(parts) < 2:
-        print("Invalid Proxy Provided...")
-        return False
-    if parts[0] not in ["http", "https"]:
-        print("Invalid Protocol Provided... Valid Protocols are http/https...")
-        return False
-    if parts[1] == " ":
-        print("Invalid Hostname Provided... It should be valid IP/FQDN...")
-        return False
-    return True
-
-
-def prepare_proxy(url, username=None, password=None):
-    if (
-        username is None
-        or len(username) == 0
-        or password is None
-        or len(password) == 0
-    ):
-        return url
-    prefix = "https://" if url.startswith("https://") else "http://"
-    url = url.replace(prefix, "")
-
-    username = urllib.parse.quote_plus(username)
-    password = urllib.parse.quote_plus(password)
-    return f"{prefix}{username}:{password}@{url}"
-
-
-def parse_proxy(url):
-    if url is None or len(url) == 0:
-        return None
-
-    url = urllib.parse.urlparse(url)
-    if url.scheme is None:
-        return f"{url.hostname}"
-    if url.port is None:
-        return f"{url.scheme}://{url.hostname}"
-    return f"{url.scheme}://{url.hostname}:{url.port}"
-
-
 def set_ce_version_for_vm():
     try:
         from ce_as_vm_tags import CORE_TAG, UI_TAG, MONGO_TAG, RABBITMQ_TAG
@@ -1253,103 +1385,6 @@ def set_ce_version_for_vm():
         LATEST_TAG_AND_VERSION["RABBITMQ_TAG"] = RABBITMQ_TAG
     except Exception:
         pass
-
-
-def ask_for_initial_inputs():
-    isProxy = (
-        input(
-            "\n\nAre you using HTTP(s) proxy for outbound traffic? [y/n]\n> "
-        )
-        .strip()
-        .lower()
-    )
-
-    if isProxy == "y" or isProxy == "yes":
-        # HTTPS_PROXY
-        cur_https_proxy = parse_proxy(
-            AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", None)
-        )
-
-        print(
-            f"\nEnter Proxy URL (e.g. http(s)://10.0.0.0:3128)  {('(Current: ' + cur_https_proxy + ')') if cur_https_proxy is not None else ''}"
-        )
-        https_proxy = input("> ").strip()
-        https_proxy_password = None
-        while not validate_proxy(https_proxy, cur_https_proxy):
-            print(
-                f"\nEnter Proxy URL (e.g. http(s)://10.0.0.0:3128)  {('(Current: ' + cur_https_proxy + ')') if cur_https_proxy is not None else ''}"
-            )
-            https_proxy = input("> ").strip()
-        if https_proxy is None or len(https_proxy) == 0:
-            https_proxy = cur_https_proxy
-
-        https_proxy_username = input(
-            f"Enter proxy username (skip in case of unauthenticated proxy):\n> "
-        ).strip()
-        if https_proxy_username is not None and len(https_proxy_username) > 0:
-            https_proxy_password = getpass(
-                "Enter proxy password: \n> "
-            ).strip()
-            while https_proxy_password == "":
-                print("Proxy password can not be empty... Please try again.\n")
-                https_proxy_password = getpass(
-                    "Enter proxy password: \n> "
-                ).strip()
-
-        AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = prepare_proxy(
-            https_proxy,
-            username=https_proxy_username,
-            password=https_proxy_password,
-        )
-        AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = AVAILABLE_INPUTS[
-            "CORE_HTTPS_PROXY"
-        ]
-
-        print(
-            "\n\033[1;37mNOTE: These proxy details will be reflected on the Settings > General > Proxy page on Netskope CE UI.\n\033[0;37m"
-        )
-    else:
-        AVAILABLE_INPUTS["CORE_HTTP_PROXY"] = ""
-        AVAILABLE_INPUTS["CORE_HTTPS_PROXY"] = ""
-
-    tenant_name = ""
-    while True:
-        tenant_name = input(
-            "\n> Please enter the Netskope Tenant URL (e.g. https://demo.goskope.com)\nPlease Enter 'test' if you do not have any Netskope tenant: "
-        ).strip()
-        if tenant_name == "test":
-            break
-        if not tenant_name:
-            print_fail(
-                "Tenant URL can not be empty. Please provide full tenant URL (e.g. https://demo.goskope.com)."
-            )
-            continue
-        tenant_name = tenant_name.strip().rstrip("/")
-        result = urlparse(tenant_name)
-        if result.scheme.lower() != "https":
-            print_fail(
-                "Tenant URL schema must be https. Please provide full tenant URL (e.g. https://demo.goskope.com)."
-            )
-        elif (
-            result.path != ""
-            or result.params != ""
-            or result.query != ""
-            or result.fragment != ""
-        ):
-            print_fail(
-                "Invalid Tenant URL provided. Please provide full tenant URL (e.g. https://demo.goskope.com)."
-            )
-        else:
-            break
-    AVAILABLE_INPUTS["NETSKOPE_TENANT"] = tenant_name
-
-
-class ClientExceptions(Exception):
-    pass
-
-
-class ServerExceptions(Exception):
-    pass
 
 
 def handle_http_errors(res):
@@ -1379,42 +1414,6 @@ def handle_http_errors(res):
         raise ServerExceptions("Service Unavailable Error.")
     elif status_code == 504:
         raise ServerExceptions("Gateway Timeout Error.")
-
-
-def connectivity_check_for_analytics():
-    try:
-        connectivity = True
-        print()
-        url = "https://reporting.netskope.tech/"
-        req = urllib.request.Request(url)
-        proxy = None
-        if AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", "") != "":
-            proxy = AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY")
-        proxies = {}
-        if proxy is not None:
-            proxies["https"] = proxy
-        proxy_support = urllib.request.ProxyHandler(proxies=proxies)
-        opener = urllib.request.build_opener(proxy_support)
-        urllib.request.install_opener(opener)
-        urllib.request.urlopen(req, timeout=60)
-    except urllib.error.HTTPError as e:
-        if e.code not in [400, 401, 403]:
-            connectivity = False
-            print_warning(
-                f"Error occurred while verifying connectivity to {url}: {e}"
-            )
-    except Exception as e:
-        connectivity = False
-        print_warning(
-            f"Error occurred while verifying connectivity to {url}: {e}"
-        )
-    if not connectivity:
-        print_warning(
-            "Unable to establish a connection with https://reporting.netskope.tech/. "
-            "Verify the network connectivity, proxy settings or firewall configurations "
-            "to address the connectivity issues for enhanced product deployment and administration experience."
-        )
-    AVAILABLE_INPUTS["ANALYTICS_SERVER_CONNECTIVITY"] = connectivity
 
 
 def handle_connectivity(name, url):
@@ -1470,6 +1469,8 @@ def handle_connectivity(name, url):
 
 
 def timeout(t, cmd, *args):
+    if len(args) != 2:
+        return
     pool = multiprocessing.Pool(processes=1)
     result = pool.apply_async(cmd, args=args)
     try:
@@ -1477,27 +1478,19 @@ def timeout(t, cmd, *args):
     except multiprocessing.TimeoutError as err:
         pool.terminate()
         pool.join()
-        url = ""
-        if len(args) == 0:
-            CHECKS["Github"] = Status.FAIL
-            url = "https://github.com"
-        else:
-            CHECKS[args[0]] = Status.FAIL
-            url = args[1]
+        CHECKS[args[0]] = Status.FAIL
+        url = args[1]
         print_fail(
             f"Error occurred while verifying connectivity to {url}: Timed out."
         )
     except Exception as err:
-        if len(args) == 0:
-            CHECKS["Github"] = Status.FAIL
-        else:
-            CHECKS[args[0]] = Status.FAIL
+        CHECKS[args[0]] = Status.FAIL
     else:
         return retval
 
 
 def check_connectivity():
-    # Check connectivity for github, docker, tenant and analytics url
+    # Check connectivity for docker
     print(
         "\nVerifying the connectivity for pre-requisite outbound network calls..."
     )
@@ -1511,26 +1504,12 @@ def check_connectivity():
             "\033[1;37mNOTE: This connectivity check is only for the Docker Hub (https://hub.docker.com). Docker images are pulled from CDN. Please make sure that you have the required connectivity to pull the docker images.\033[0;37m"
         )
 
-    tenant_name = AVAILABLE_INPUTS.get("NETSKOPE_TENANT")
-    if tenant_name != "test":
-        timeout(
-            60,
-            handle_connectivity,
-            "Netskope tenant",
-            tenant_name,
-        )
-
     if Status.FAIL in [
-        CHECKS.get("Github"),
         CHECKS.get("Docker Hub"),
-        CHECKS.get("Netskope tenant"),
     ]:
         print(
             "\033[1;31mOne or more connectivity checks have failed. Verify the network connectivity, proxy settings or firewall configurations to address the connectivity issues. \033[0;37m"
         )
-    else:
-        put_proxy_in_env()
-        connectivity_check_for_analytics()
 
 
 def isRedHat():
@@ -1555,6 +1534,12 @@ def isRedHat79():
                 return False
     except Exception as e:
         return False
+
+
+def cpu_supports_avx():
+    with open("/proc/cpuinfo", "r") as f:
+        cpuinfo = f.read()
+    return "avx" in cpuinfo
 
 
 def check_prerequisites():
@@ -1771,6 +1756,44 @@ def check_and_apply_file_permissions():
         )
         CHECKS["SSL_CERTS"] = Status.FAIL
 
+    # rabbitmq ssl certs
+    try:
+        if not os.path.exists("data/ssl_certs/mongodb_rabbitmq_certs"):
+            print_fail(
+                "Could not locate data/ssl_certs/mongodb_rabbitmq_certs directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
+            )
+            CHECKS["MONGODB_RABBITMQ_SSL_CERTS"] = Status.FAIL
+        else:
+            if platform.system().lower() not in ["darwin"]:
+                command = f"{SUDO_PREFIX} chown -R 1001:1001 data/ssl_certs/mongodb_rabbitmq_certs"
+                set_directory_permission("data/ssl_certs/mongodb_rabbitmq_certs", command)
+                print_pass("Changing owner of data/ssl_certs/mongodb_rabbitmq_certs to user with uid 1001")
+                CHECKS["MONGODB_RABBITMQ_SSL_CERTS"] = Status.PASS
+
+            command = f"{SUDO_PREFIX} chmod 755 data/ssl_certs/mongodb_rabbitmq_certs"
+            set_directory_permission("data/ssl_certs/mongodb_rabbitmq_certs", command)
+            print_pass("Adding read/write permissions to data/ssl_certs/mongodb_rabbitmq_certs")
+            CHECKS["MONGODB_RABBITMQ_SSL_CERTS"] = Status.PASS
+
+        if os.path.exists("data/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt"):
+            command = f"{SUDO_PREFIX} chmod 644 data/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt"
+            set_directory_permission("data/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt", command)
+            print_pass("Adding read permissions to data/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt")
+
+        if os.path.exists("data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key"):
+            command = f"{SUDO_PREFIX} chmod 644 data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key"
+            set_directory_permission("data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key", command)
+            print_pass("Adding read permissions to data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key")
+
+        if os.path.exists("data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem"):
+            command = f"{SUDO_PREFIX} chmod 644 data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem"
+            set_directory_permission("data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem", command)
+            print_pass("Adding read permissions to data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem")
+
+    except Exception as e:
+        print_fail("Error occurred while verifying file permissions for data/ssl_certs/mongodb_rabbitmq_certs")
+        CHECKS["MONGODB_RABBITMQ_SSL_CERTS"] = Status.FAIL
+
     # rabbitmq directory
     try:
         if not os.path.exists("data/rabbitmq/data"):
@@ -1787,6 +1810,8 @@ def check_and_apply_file_permissions():
                 )
                 CHECKS["RABBITMQ"] = Status.PASS
             command = f"{SUDO_PREFIX} chmod -R 744 data/rabbitmq"
+            set_directory_permission("data/rabbitmq", command)
+            command = f"{SUDO_PREFIX} chmod 755 data/rabbitmq"
             set_directory_permission("data/rabbitmq", command)
             command = f"{SUDO_PREFIX} chmod 755 data/rabbitmq"
             set_directory_permission("data/rabbitmq", command)
@@ -1816,6 +1841,32 @@ def check_and_apply_file_permissions():
             f"Error occurred while verifying file permissions for data/ca_certs"
         )
         CHECKS["ca_certs"] = Status.FAIL
+
+    try:
+        if not os.path.exists("data/files-data"):
+            print_fail(
+                f"Could not locate data/files-data directory (Please run `git reset --hard HEAD && git pull` and re-run the script.)"
+            )
+            CHECKS["files_data"] = Status.FAIL
+        else:
+            if platform.system().lower() not in ["darwin"]:
+                command = f"{SUDO_PREFIX} chown -R 1001:1001 data/files-data"
+                set_directory_permission("data/files-data", command)
+                print_pass(
+                    "Changing owner of data/files-data to user with uid 1001"
+                )
+                CHECKS["files_data"] = Status.PASS
+            command = f"{SUDO_PREFIX} chmod -R 760 data/files-data/"
+            set_directory_permission("data/files-data", command)
+            command = f"{SUDO_PREFIX} chmod 760 data/files-data"
+            set_directory_permission("data/files-data", command)
+            print_pass(f"Adding read and write permissions to data/files-data")
+            CHECKS["files_data"] = Status.PASS
+    except Exception as e:
+        print_fail(
+            f"Error occurred while verifying file permissions for data/files-data"
+        )
+        CHECKS["files_data"] = Status.FAIL
 
     # start script
     try:
@@ -1868,32 +1919,36 @@ def validate_port(port):
         return False
 
 
-def check_port(port):
+def check_port(name, port, service_name, is_service_running):
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         result = sock.connect_ex(("127.0.0.1", port))
         if result == 0:
-            if is_ui_running:
-                print_warning("The UI container is already running.")
-                CHECKS["UI Port Check"] = Status.PASS
+            if is_service_running:
+                if service_name:
+                    print_warning(f"The {service_name} is already running.")
+                CHECKS[name] = Status.PASS
                 return True
             else:
                 print_fail(f"Port {port} is already in use.\033[0;37m\n")
-                CHECKS["UI Port Check"] = Status.FAIL
+                CHECKS[name] = Status.FAIL
                 return False
         else:
             print_pass(f"Port {port} is available.\n")
-            CHECKS["UI Port Check"] = Status.PASS
+            CHECKS[name] = Status.PASS
             return True
     except Exception as e:
         # print(e)
         print_warning(f"Could not verify Port information of the machine]n")
-        CHECKS["UI Port Check"] = Status.NOT_VERIFIED
+        CHECKS[name] = Status.NOT_VERIFIED
+        return True
 
 
 def pull_from_github():
     myenv = os.environ.copy()
     myenv["LC_ALL"] = "C"
+    myenv["GIT_DIR"] = os.path.join(os.getcwd(), ".git")
+    myenv["GIT_WORK_TREE"] = os.getcwd()
     print("\nChecking for local changes..")
     pr1 = subprocess.Popen(
         ["git", "diff", "-G."],
@@ -1956,62 +2011,29 @@ def migrate_mongo():
         exit(1)
 
 
-def copy_env(inputs):
-    while True:
-        if AVAILABLE_INPUTS.get("DESTINATION_PATH", "") == "":
-            destination = input(
-                "> Enter the destination path (e.g. './backup_env'): "
-            ).strip()
-        else:
-            destination = input(
-                f"\n> Enter the destination path for backup of .env (Current: \"{AVAILABLE_INPUTS['DESTINATION_PATH']}\"): "
-            ).strip()
-        destination = (
-            AVAILABLE_INPUTS.get("DESTINATION_PATH", "")
-            if destination == ""
-            else destination
+def copy_env(file_path, name):
+    destination = "data/ce_env_backups"
+    destination = os.path.join(destination, name)
+    command = f"cp -r {file_path} {destination}"
+    try:
+        p = subprocess.Popen(
+            command.split(),
+            shell=False,
+            stderr=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stdin=subprocess.PIPE,
         )
-        if destination.strip() == get_secret_location(inputs).strip():
-            print_warning(
-                "Can not use this path as the backup location. Please enter a different path."
-            )
-            continue
-        AVAILABLE_INPUTS["DESTINATION_PATH"] = destination
-        put_env_variable(AVAILABLE_INPUTS)
-        command = f"cp -r .env {destination}"
-        try:
-            p = subprocess.Popen(
-                command.split(),
-                shell=False,
-                stderr=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stdin=subprocess.PIPE,
-            )
-            out, err = p.communicate()
-            if len(err) <= 0:
-                print("backup completed...")
-                break
-            else:
-                AVAILABLE_INPUTS.get("DESTINATION_PATH", "") == ""
-                raise Exception(err.decode("utf-8"))
-        except Exception as e:
-            if p:
-                p.kill()
-            print(f"Error occurred while taking backup. Error: {e}")
-            continue
+        out, err = p.communicate()
+        if len(err) <= 0:
+            return
+    except Exception as e:
+        if p:
+            p.kill()
+        print(f"Error occurred while taking of backup of {file_path}. Error: {e}")
 
 
-def take_env_backup(inputs):
-    if AVAILABLE_INPUTS.get("DESTINATION_PATH", "") == "":
-        isBackup = (
-            input("\n\n> Do you want to take backup of .env file? [y/n]: ")
-            .strip()
-            .lower()
-        )
-        if isBackup == "y" or isBackup == "yes":
-            copy_env(inputs)
-    else:
-        copy_env(inputs)
+def take_env_backup(file_path, name):
+    copy_env(file_path, name)
 
 
 def get_total_physical_memory():
@@ -2046,273 +2068,128 @@ def assign_memory_to_rabbitmq_container():
         pass
 
 
-def validate_jwt_secret(value):
+def validate_secret(secret_type, value):
     if not value:
-        return False, "JWT Secret should not be empty. Please try again."
-    restricted_chars = {"\\", "/", " ", "'", '"', "?", "&", "\t"}
+        return False, f"{secret_type} should not be empty."
+    restricted_chars = {"\\", "/", " ", "'", '"', "?", "&", "\t", "\n", "#", "$"}
     for char in restricted_chars:
         if char in value:
             return False, (
-                "JWT Secret can not contain \\ / space "
-                "tab ' \" ? & Please try again."
+                f"{secret_type} can not contain \\ / space "
+                "tab ' \" ? & # $ characters."
             )
     return True, "Valid"
 
 
-def change_maintenance_password(raw_text: str, forward=True):
-    try:
-        CE_SETUP_ID = None
-        CE_HEX_CODE = None
-        CE_IV = None
-        if not AVAILABLE_INPUTS.get("CE_SETUP_ID", ""):
-            CE_SETUP_ID = generate_ce_setup_id()
-            AVAILABLE_INPUTS["CE_SETUP_ID"] = f'"{CE_SETUP_ID}"'
-            AVAILABLE_INPUTS["CE_HEX_CODE"] = os.urandom(8).hex().upper()
-            AVAILABLE_INPUTS["CE_IV"] = os.urandom(16).hex()
-        CE_HEX_CODE = AVAILABLE_INPUTS["CE_HEX_CODE"]
-        CE_IV = AVAILABLE_INPUTS["CE_IV"]
-        CE_SETUP_ID = AVAILABLE_INPUTS["CE_SETUP_ID"].strip('"')
-        command = f"""echo -n '{CE_SETUP_ID}' | openssl dgst -sha256 -hex | awk '{{print $2}}'"""
-        process = subprocess.Popen(
-            command,
-            shell=True,
-            stderr=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-        )
-        out, err = process.communicate()
-        if process.returncode == 0:
-            processed_stream = out.decode().strip()
-            # generate mpass
-            if forward:
-                second_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -A -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter 10000"""
-                second_process = subprocess.Popen(
-                    second_command,
-                    shell=True,
-                    stderr=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                )
-                sec_out, sec_err = second_process.communicate()
-                if second_process.returncode == 0:
-                    return sec_out.decode().strip()
-                else:
-                    raise Exception(f"{sec_err.decode('utf-8')}\n")
-            else:
-                third_command = f"""echo "{raw_text}" | openssl enc -aes-256-cbc -A -d -a -S {CE_HEX_CODE} -K "{processed_stream}" -iv {CE_IV} -pbkdf2 -iter 10000"""
-                third_process = subprocess.Popen(
-                    third_command,
-                    shell=True,
-                    stderr=subprocess.PIPE,
-                    stdout=subprocess.PIPE,
-                )
-                third_out, third_err = third_process.communicate()
-                if third_process.returncode == 0:
-                    return third_out.decode().strip()
-                else:
-                    raise Exception(f"{third_err.decode('utf-8')}\n")
-        else:
-            raise Exception(f"{err.decode('utf-8')}\n")
-    except Exception as e:
-        raise Exception(
-            f"Error occurred while processing environment variables. Error: {e}"
-        )
-
-
-def ask_for_config_params():
+def set_config_params():
     # Ask for Protocol
-    protocol = ""
-    is_ssl_enabled = check_for_certs()
+    protocol = CLOUD_EXCHANGE_CONFIG.get("UI_PROTOCOL", "https")
+    ui_port = CLOUD_EXCHANGE_CONFIG.get("UI_PORT", 443)
+    protocol = "https" if protocol not in ["http", "https"] else protocol
+    is_ssl_enabled = check_for_certs(crt_postfix="cte_cert")
     if not is_ssl_enabled:
-        while protocol not in ["http", "https"]:
-            protocol = (
-                input(
-                    "\nDo you want to access CE over HTTP, or HTTPS (HTTPS is recommended)? "
+        if protocol == "http":
+            DEFAULT_INPUTS["TLS_VERSION"]["default"] = "TLSv1.3"
+            DEFAULT_INPUTS["TLS_VERSION"]["skip"] = True
+            AVAILABLE_INPUTS["UI_PROTOCOL"] = "http"
+        elif protocol == "https":
+            AVAILABLE_INPUTS["UI_PROTOCOL"] = "https"
+            DEFAULT_INPUTS["UI_PORT"]["default"] = ui_port
+            is_ssl_enabled = check_for_certs(crt_postfix="cte_cert")  # Checking if SSL is enabled or not
+            if not is_ssl_enabled:
+                cert_file, key_file, _, _, _ = _get_cert_location(crt_postfix="cte_cert", is_pem=False, with_ca=False)
+                extendedkeyusage_conf = "data/ssl_certs/extendedkeyusage.txt"
+                create_self_signed_ssl_certs(
+                    cert_file=cert_file, key_file=key_file, extendedkeyusage_conf=extendedkeyusage_conf
                 )
-                .strip()
-                .lower()
-            )
-            if protocol == "http":
-                print("Accessing CE over HTTP is not recommended\n")
-                confim = (
-                    input("Do you still want to access CE over HTTP? (y/yes) ")
-                    .strip()
-                    .lower()
-                )
-                if confim not in ["y", "yes"]:
-                    protocol = ""
-                    continue
-                else:
-                    DEFAULT_INPUTS["ENABLE_TLS_V_1_2"]["default"] = "TLSv1.3"
-                    DEFAULT_INPUTS["ENABLE_TLS_V_1_2"]["skip"] = True
-                    AVAILABLE_INPUTS["UI_PROTOCOL"] = "http"
-            elif protocol == "https":
-                AVAILABLE_INPUTS["UI_PROTOCOL"] = "https"
-                DEFAULT_INPUTS["UI_PORT"]["default"] = 443
-                is_ssl_enabled = (
-                    check_for_certs()
-                )  # Checking if SSL is enabled or not
-                if not is_ssl_enabled:
-                    create_self_signed_ssl_certs()
 
-                message = "\033[1;37mReplace ./data/ssl_certs/cte_cert.crt and ./data/ssl_certs/cte_cert_key.key files with your custom certificate and key files respectively to use custom SSL certificates.\033[0;37m"
-                if AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY"):
-                    message = message.replace(
-                        "./data/ssl_certs/",
-                        f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs/",
-                    )
-                print(message)
-            else:
-                print("Invalid input... Valid inputs are 'http' or 'https'.\n")
+            message = f"\033[1;37mReplace {cert_file} and {key_file} files with your custom certificate and key files respectively to use custom SSL certificates.\033[0;37m"
+            print(message)
+        else:
+            print("Invalid input... Valid inputs are 'http' or 'https'.\n")
     else:
-        DEFAULT_INPUTS["UI_PORT"]["default"] = 443
+        DEFAULT_INPUTS["UI_PORT"]["default"] = ui_port
 
-    print()
+    if not check_for_certs(crt_postfix="mongodb_rabbitmq_certs/tls_cert", with_ca=True, is_pem=True):
+        print("Preparing certificates for secure MongoDB and RabbitMQ...")
+        cert_file, key_file, pem_file, ca_key, ca_crt = _get_cert_location(crt_postfix="mongodb_rabbitmq_certs/tls_cert", is_pem=True, with_ca=True)
 
-    # Ask for all configuration parameters
+        common_ca_self_signed_ssl(
+            ca_key=ca_key,
+            ca_crt=ca_crt,
+            tls_conf="data/ssl_certs/mongodb_rabbitmq_certs/extendedkeyusage.txt",
+            tls_cert_cert=cert_file,
+            tls_cert_csr=cert_file.replace(".crt", ".csr"),
+            tls_cert_key=key_file,
+            tls_cert_key_pem=pem_file,
+            common_ca_conf="data/ssl_certs/mongodb_rabbitmq_certs/common_ca.conf"
+        )
+        print(f"To change/update mongodb and rabbitmq ssl certs, please remove existing certs from {cert_file}, {key_file}, {pem_file}, {ca_crt} and {ca_key}.\n")
+
+    if not check_for_certs(crt_postfix="mongodb_rabbitmq_certs/tls_cert", with_ca=True, is_pem=True, from_local=True):
+        cert_file, key_file, pem_file, ca_key, ca_crt = _get_cert_location(crt_postfix="mongodb_rabbitmq_certs/tls_cert", is_pem=True, with_ca=True)
+        local_cert_file, local_key_file, local_pem_file, local_ca_key, local_ca_crt = _get_cert_location(crt_postfix="mongodb_rabbitmq_certs/tls_cert", is_pem=True, with_ca=True, from_local=True)
+        base_dir = os.path.dirname(ca_key)
+        local_base_dir = os.path.dirname(local_ca_key)
+        print(f"Could not found ssl certificates in {local_base_dir}/, Copying SSL certificates from {base_dir}/.")
+        execute_shell_command(f"{SUDO_PREFIX} cp -rp {base_dir}/* {local_base_dir}/")
+        print(f"To change/update Management server ssl certs, please remove existing certs from {local_cert_file}, {local_key_file}, {local_pem_file}, {local_ca_crt} and {local_ca_key}.")
+    else:
+        local_cert_file, local_key_file, local_pem_file, local_ca_key, local_ca_crt = _get_cert_location(crt_postfix="mongodb_rabbitmq_certs/tls_cert", is_pem=True, with_ca=True, from_local=True)
+        print(f"To change/update Management server ssl certs, please remove existing certs from {local_cert_file}, {local_key_file}, {local_pem_file}, {local_ca_crt} and {local_ca_key}.")
+
     for key, item in DEFAULT_INPUTS.items():
         data = ""
-        if not item["skip"]:
-            if key not in AVAILABLE_INPUTS:
-                if item["help"]:
-                    print(item["help"])
-                if item.get("mandatory", False):
-                    user_input = item.get("user_input")
-                    if key == "JWT_SECRET":
-                        data = ""
-                        while data == "":
-                            data = getpass(f"> {user_input}: ").strip()
-                            result, message = validate_jwt_secret(data)
-                            if not result:
-                                print(f"{message}\n")
-                                data = ""
-                                continue
-                    elif (
-                        "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS
-                        and key == "MAINTENANCE_PASSWORD"
-                        and os.path.exists(get_secret_location(AVAILABLE_INPUTS))
-                    ):
-                        pass
-                    elif key == "MAINTENANCE_PASSWORD":
-                        data = "a"
-                        confirm_data = "b"
-                        while data != confirm_data or len(data) == 0:
-                            data = "a"
-                            confirm_data = "b"
-                            data = getpass(f"> {user_input}: ").strip()
-                            if data == "":
-                                print(
-                                    "Maintenance password can not be empty. Please try again.\n"
-                                )
-                                continue
-
-                            if (
-                                ("\\" in data)
-                                or ("/" in data)
-                                or ("'" in data)
-                                or ('"' in data)
-                                or (" " in data)
-                            ):
-                                print(
-                                    "Maintenance password can not contain \\ / space ' \" Please try again.\n"
-                                )
-                                continue
-
-                            confirm_data = getpass(
-                                f"\n> Confirm maintenance password: "
-                            ).strip()
-                            if data != confirm_data:
-                                print(
-                                    "Maintenance password and Confirm maintenance password do not match. Please try again.\n"
-                                )
-                        data = f"'{data}'"
-                    else:
-                        data = input(f"> {user_input}: ").strip()
+        if key in CLOUD_EXCHANGE_CONFIG:
+            if key == "TLS_VERSION":
+                data = get_tls_version(CLOUD_EXCHANGE_CONFIG[key])
+                AVAILABLE_INPUTS[key] = data
+            elif (
+                "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS
+                and key == "MAINTENANCE_PASSWORD"
+                and os.path.exists(get_secret_location(AVAILABLE_INPUTS))
+            ):
+                pass
+            elif key == "MAINTENANCE_PASSWORD" and not AVAILABLE_INPUTS.get("MAINTENANCE_PASSWORD", ""):
+                if not CLOUD_EXCHANGE_CONFIG[key]:
+                    CLOUD_EXCHANGE_CONFIG[key] = generate_random_password()
+                    print(f"\nSetting following random Maintenance Password - {CLOUD_EXCHANGE_CONFIG[key]}\n")
+                    print("Please note down the above Maintenance Password for future reference. It will be required while migrating Cloud Exchange to different machine.")
                 else:
-                    user_input = item.get("user_input")
-                    if user_input:
-                        if key == "UI_PORT":
-                            i = 0
-                            while True:
-                                if i >= 3:
-                                    print(
-                                        "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m"
-                                    )
-                                    exit(1)
-                                data = input(
-                                    f"> {user_input} (Default: \"{item['default']}\"): "
-                                ).strip()
-                                if validate_port(data):
-                                    data = (
-                                        item["default"] if data == "" else data
-                                    )
-                                    if check_port(int(data)):
-                                        print(
-                                            "\033[1;37mNOTE: This port will be used to access the Netskope CE UI. Please make sure that inbound traffic to this port is allowed.\n\033[0;37m"
-                                        )
-                                        break
-                                else:
-                                    print(
-                                        "Invalid port provided... Port should be within 1 to 65535 range...\n"
-                                    )
-                                i += 1
-                        else:
-                            data = input(
-                                f"> {user_input} (Default: \"{item['default']}\"): "
-                            ).strip()
-                    else:
-                        data = input(
-                            f"> Enter {key} (Default: \"{item['default']}\"): "
-                        ).strip()
-
+                    status, message = validate_secret("Maintenance Password", CLOUD_EXCHANGE_CONFIG[key])
+                    if not status:
+                        print(message)
+                        CLOUD_EXCHANGE_CONFIG[key] = generate_random_password()
+                        print(f"\nSetting following random Maintenance Password - {CLOUD_EXCHANGE_CONFIG[key]}\n")
+                        print("Please note down the above Maintenance Password for future reference. It will be required while migrating Cloud Exchange to different machine.")
+                AVAILABLE_INPUTS[key] = f"'{CLOUD_EXCHANGE_CONFIG[key]}'"
+            elif key == "JWT_SECRET":
+                if CLOUD_EXCHANGE_CONFIG[key]:
+                    status, message = validate_secret("JWT Secret", CLOUD_EXCHANGE_CONFIG[key])
+                    if not status:
+                        print(message)
+                        CLOUD_EXCHANGE_CONFIG[key] = str(uuid.uuid4().hex).replace("-", "")
+                        print(f"\nSetting following random JWT secret - {CLOUD_EXCHANGE_CONFIG[key]}\n")
+                        print("Please note down the above JWT secret for future reference. It will be required in Cloud Exchange HA configuration.")
+                if not CLOUD_EXCHANGE_CONFIG[key] and not AVAILABLE_INPUTS.get("JWT_SECRET", ""):
+                    CLOUD_EXCHANGE_CONFIG[key] = generate_random_password()
+                    print(f"\nSetting following random JWT secret - {CLOUD_EXCHANGE_CONFIG[key]}\n")
+                    print("Please note down the above JWT secret for future reference. It will be required in Cloud Exchange HA configuration.")
+                elif not CLOUD_EXCHANGE_CONFIG[key] and AVAILABLE_INPUTS.get("JWT_SECRET", ""):
+                    continue
+                AVAILABLE_INPUTS[key] = CLOUD_EXCHANGE_CONFIG[key]
+            elif key == "UI_PORT":
+                if validate_port(CLOUD_EXCHANGE_CONFIG[key]) and check_port("UI Port Check", CLOUD_EXCHANGE_CONFIG[key],"UI container", is_ui_running):
+                    AVAILABLE_INPUTS[key] = CLOUD_EXCHANGE_CONFIG[key]
+                elif should_ignore:
+                    AVAILABLE_INPUTS[key] = CLOUD_EXCHANGE_CONFIG[key]
+            elif key == "CE_MANAGEMENT_PORT":
+                if validate_port(CLOUD_EXCHANGE_CONFIG[key]) and check_port("Management Port Check", CLOUD_EXCHANGE_CONFIG[key], "Management service", is_management_service_running):
+                    AVAILABLE_INPUTS[key] = CLOUD_EXCHANGE_CONFIG[key]
+                elif should_ignore:
+                    AVAILABLE_INPUTS[key] = CLOUD_EXCHANGE_CONFIG[key]
             else:
-                if key != "MAINTENANCE_PASSWORD":
-                    if item["help"]:
-                        print(item["help"])
-                    user_input = item.get("user_input", None)
-                    if user_input:
-                        if key == "JWT_SECRET":
-                            data = ""
-                            while data == "":
-                                data = getpass(f"> {user_input}: ").strip()
-                                result, message = validate_jwt_secret(data)
-                                if not result:
-                                    print(f"{message}\n")
-                                    data = ""
-                                    continue
-                        elif key == "UI_PORT":
-                            i = 0
-                            while True:
-                                if i >= 3:
-                                    print(
-                                        "\033[1;37mPlease make sure the port on which you want to access the Netskope CE UI is available and Re-run the script.\033[0;37m"
-                                    )
-                                    exit(1)
-                                data = input(
-                                    f'> {user_input} (Current: "{AVAILABLE_INPUTS[key]}"): '
-                                ).strip()
-                                if validate_port(data):
-                                    data = (
-                                        AVAILABLE_INPUTS[key]
-                                        if data == ""
-                                        else data
-                                    )
-                                    if check_port(int(data)):
-                                        print(
-                                            "\033[1;37mNOTE: This port will be used to access the Netskope CE UI. Please make sure that inbound traffic to this port is allowed.\n\033[0;37m"
-                                        )
-                                        break
-                                else:
-                                    print(
-                                        "Invalid port provided... Port should be within 1 to 65535 range...\n"
-                                    )
-                                i += 1
-                        else:
-                            data = input(
-                                f'> {user_input} (Current: "{AVAILABLE_INPUTS[key]}"): '
-                            ).strip()
-                    else:
-                        data = input(
-                            f'> Enter {key} (Current: "{AVAILABLE_INPUTS[key]}"): '
-                        ).strip()
+                AVAILABLE_INPUTS[key] = CLOUD_EXCHANGE_CONFIG[key]
             print("")
         data = data.strip() if isinstance(data, str) else data
         if not data:
@@ -2326,11 +2203,6 @@ def ask_for_config_params():
                 AVAILABLE_INPUTS["MAINTENANCE_PASSWORD"].strip("'")
             )
 
-        if key == "ENABLE_TLS_V_1_2":
-            if data.lower() in ["y", "yes"]:
-                data = '"TLSv1.2 TLSv1.3"'
-            else:
-                data = "TLSv1.3"
         AVAILABLE_INPUTS[key] = data
 
         if key == "PULL_THREADS":
@@ -2340,11 +2212,7 @@ def ask_for_config_params():
             key == "RABBITMQ_COOKIE"
             and not AVAILABLE_INPUTS["RABBITMQ_COOKIE"]
         ):
-            length = 32
-            chars = string.ascii_letters + string.digits
-            AVAILABLE_INPUTS["RABBITMQ_COOKIE"] = "".join(
-                random.choice(chars) for _ in range(length)
-            )
+            AVAILABLE_INPUTS["RABBITMQ_COOKIE"] = generate_random_password()
 
 
 def _validate_ip(ip, debug=True):
@@ -2370,10 +2238,11 @@ def _validate_ips(ips):
 def _validate_current_node(ip):
     if ip not in AVAILABLE_INPUTS.get("HA_IP_LIST", "").split(","):
         print(
-            "Provided input doesn't match with any of the listed node addresses."
+            "Provided HA_CURRENT_NODE doesn't match with any of the listed node addresses."
         )
         return False
     return True
+
 
 def recursive_change_permissions(root_dir, dir_perms=0o755, file_perms=0o664):
     for dirpath, dirnames, filenames in os.walk(root_dir):
@@ -2383,6 +2252,7 @@ def recursive_change_permissions(root_dir, dir_perms=0o755, file_perms=0o664):
         for filename in filenames:
             file_full_path = os.path.join(dirpath, filename)
             os.chmod(file_full_path, file_perms)
+
 
 def recursive_chown(path, uid, gid):
     os.chown(path, uid, gid)
@@ -2408,6 +2278,20 @@ def create_required_files(location):
 
     if os.path.exists(f"{location}/config/ssl_certs/cte_cert_key.key"):
         os.chmod(f"{location}/config/ssl_certs/cte_cert_key.key", 0o644)
+
+    if not os.path.exists(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs"):
+        os.mkdir(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs")
+    os.chmod(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs", 0o755)
+    os.chown(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs", 1001, 1001)
+
+    if os.path.exists(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt"):
+        os.chmod(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt", 0o644)
+
+    if os.path.exists(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key"):
+        os.chmod(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key", 0o644)
+
+    if os.path.exists(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem"):
+        os.chmod(f"{location}/config/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem", 0o644)
 
     if not os.path.exists(f"{location}/config/ca_certs"):
         os.mkdir(f"{location}/config/ca_certs")
@@ -2460,6 +2344,13 @@ def create_persistent_dirs(location="./data"):
 
 def update_yaml_file(filename):
     # Import Yaml module for HA.
+    import sys
+    import os
+
+    # Add virtual environment to path for importing
+    venv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), VENV_DIR, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "site-packages")
+    sys.path.insert(0, venv_path)
+
     import yaml
 
     with open(f"{filename}.yml", "r") as file:
@@ -2479,8 +2370,15 @@ def update_yaml_file(filename):
                 "rabbit@rabbitmq-stats",
                 f"rabbit@{AVAILABLE_INPUTS['HA_CURRENT_NODE']}",
             )
-    compose_data["services"]["rabbitmq-stats"]["environment"].append(
-        "RABBITMQ_USE_LONGNAME=true"
+    compose_data["services"]["rabbitmq-stats"]["environment"].extend(
+        [
+            "RABBITMQ_USE_LONGNAME=true",
+            'RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS=-proto_dist inet_tls -ssl_dist_optfile /etc/rabbitmq/inter_node_tls.conf',
+            'RABBITMQ_CTL_ERL_ARGS=-proto_dist inet_tls -ssl_dist_optfile /etc/rabbitmq/inter_node_tls.conf',
+        ]
+    )
+    compose_data["services"]["rabbitmq-stats"]["volumes"].append(
+        "./data/rabbitmq/inter_node_tls.conf:/etc/rabbitmq/inter_node_tls.conf:z"
     )
 
     for service in compose_data["services"]:
@@ -2492,12 +2390,24 @@ def update_yaml_file(filename):
     # Add Ports
     compose_data["services"]["rabbitmq-stats"]["ports"] = [
         "4369:4369",
-        "5672:5672",
-        "15672:15672",
+        "5671:5671",
+        "15671:15671",
         "25672:25672",
         "35672:35672",
     ]
     compose_data["services"]["mongodb-primary"]["ports"] = ["27017:27017"]
+    # Update volume path for RabbitMQ HA
+    for index, volume in enumerate(compose_data["services"]["rabbitmq-stats"]["volumes"]):
+        compose_data["services"]["rabbitmq-stats"]["volumes"][index] = volume.replace(
+            "./data/ssl_certs",
+            f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs",
+        )
+    # Update volume path for MongoDB HA
+    for index, volume in enumerate(compose_data["services"]["mongodb-primary"]["volumes"]):
+        compose_data["services"]["mongodb-primary"]["volumes"][index] = volume.replace(
+            "./data/ssl_certs",
+            f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs",
+        )
 
     # Update mongo service for authentication using mongo_replica.key
     compose_data["services"]["mongodb-primary"]["volumes"].append(
@@ -2505,7 +2415,7 @@ def update_yaml_file(filename):
     )
     compose_data["services"]["mongodb-primary"][
         "entrypoint"
-    ][2] += " --bind_ip_all --replSet mongo_replica_set --keyFile /data/mongo_replica.key"
+    ][2] += " --bind_ip_all --replSet mongo_replica_set --keyFile /data/mongo_replica.key --tlsAllowInvalidHostnames"
 
     # Update connection strings and add required variables
     compose_data["services"]["core"]["environment"].extend(
@@ -2532,6 +2442,10 @@ def update_yaml_file(filename):
         volume = volume.replace(
             "./data/custom_plugins",
             f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/custom_plugins",
+        )
+        volume = volume.replace(
+            "./data/ssl_certs",
+            f"{AVAILABLE_INPUTS['HA_NFS_DATA_DIRECTORY']}/config/ssl_certs",
         )
         compose_data["services"]["core"]["volumes"][index] = volume
 
@@ -2565,45 +2479,31 @@ def update_yaml_file(filename):
 
 
 def ask_for_ha_values(primary=False):
+    global CLOUD_EXCHANGE_CONFIG
     # Ask for IP list
     key = "HA_IP_LIST"
-    if primary:
-        message = (
-            "> Enter comma separated IP list to connect the machines for HA."
-            f" (Current: \"{AVAILABLE_INPUTS.get(key, '')}\"): "
-        )
-        while True:
-            data = input(message).strip() or AVAILABLE_INPUTS.get(key, "")
-            data = ",".join(
-                list(filter(None, [i.strip() for i in data.split(",")]))
-            )
-            if not data:
-                print(
-                    "Required value is not provided. Please provide a valid value."
-                )
-                continue
-            AVAILABLE_INPUTS[key] = data
-            break
-    else:
+    data = CLOUD_EXCHANGE_CONFIG.get(key) or AVAILABLE_INPUTS.get(key, "")
+    data = ",".join(
+        list(filter(None, [i.strip() for i in data.split(",")]))
+    )
+    if not data:
         print(
-            f"The HA is enabled. Current HA IP list: {AVAILABLE_INPUTS.get(key)}"
+            f"{key} is not provided. Please provide a valid value."
         )
+    AVAILABLE_INPUTS[key] = data
 
     # Ask for current node info
     key = "HA_CURRENT_NODE"
-    message = f"> Enter ip address of current node. (Current: \"{AVAILABLE_INPUTS.get(key, '')}\"): "
-    while True:
-        data = input(message).strip() or AVAILABLE_INPUTS.get(key, "")
-        if not data:
-            print(
-                "Required value is not provided. Please provide a valid value."
-            )
-            continue
-        if _validate_current_node(data):
-            AVAILABLE_INPUTS[key] = data
-            if primary:
-                AVAILABLE_INPUTS["HA_PRIMARY_NODE_IP"] = data
-            break
+    data = CLOUD_EXCHANGE_CONFIG.get(key) or AVAILABLE_INPUTS.get(key, "")
+    if not data:
+        print(
+            "HA_CURRENT_NODE is not provided. Please provide a valid value."
+        )
+    if _validate_current_node(data):
+        AVAILABLE_INPUTS[key] = data
+        if primary:
+            AVAILABLE_INPUTS["HA_PRIMARY_NODE_IP"] = data
+    else:
         print(
             "The provided values does not exist in above list. Please provide a valid value."
         )
@@ -2623,103 +2523,152 @@ def generate_dependency_message(version_dict):
 
 def check_python_prerequisites():
     print("\nVerifying the Python prerequisites...")
-    try:
-        version_dict = {
-            "pyyaml": {"min_version": "6.0.0"},
-            "python-dotenv": {"min_version": "0.20.0", "max_version": "1.0.0"},
-            "pymongo": {"min_version": "4.6.3", "max_version": "4.7.3"},
-        }
-        import pkg_resources
+    python_script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), VENV_DIR, "bin", "python")
 
-        for package, version in version_dict.items():
-            module_version = pkg_resources.get_distribution(package).version
-            if "min_version" in version:
-                if not compare_versions(
-                    module_version, version["min_version"]
-                ):
-                    raise Exception(
-                        f"Invalid version of the '{package}' package"
-                    )
-            if "max_version" in version:
-                if not compare_versions(
-                    version["max_version"], module_version
-                ):
-                    raise Exception(
-                        f"Invalid version of the '{package}' package"
-                    )
+    version_dict = {
+        "pyyaml": {"min_version": "6.0.0"},
+        "python-dotenv": {"min_version": "0.20.0", "max_version": "1.0.0"},
+        "pymongo": {"min_version": "4.6.3", "max_version": "4.7.3"},
+    }
+
+    def get_version_spec(constraints):
+        spec = ""
+        if "min_version" in constraints:
+            spec += f">={constraints['min_version']}"
+        if "max_version" in constraints:
+            spec += f",<={constraints['max_version']}" if spec else f"<={constraints['max_version']}"
+        return spec
+
+    def is_version_valid(package, constraints):
+        try:
+            # Get package version using the venv's Python
+            result = subprocess.run(
+                [".cevenv/bin/python", "-c", f"import importlib.metadata; print(importlib.metadata.version('{package}'))"],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            version = result.stdout.strip()
+            if "min_version" in constraints and not compare_versions(version, constraints["min_version"]):
+                return False, f"current {version} < min {constraints['min_version']}"
+            if "max_version" in constraints and not compare_versions(constraints["max_version"], version):
+                return False, f"current {version} > max {constraints['max_version']}"
+            return True, version
+        except subprocess.CalledProcessError:
+            return False, "package not installed"
+        except Exception as e:
+            return False, f"check failed: {e}"
+
+    try:
+        # Check and install packages
+        for package, constraints in version_dict.items():
+            valid, info = is_version_valid(package, constraints)
+            if not valid:
+                if ce_as_vm_check():
+                    raise Exception("Incompatible versions found for " + package)
+                print(f"Installing/Updating {package}: reason: {info}")
+                version_spec = get_version_spec(constraints)
+                install_cmd = [python_script_path, "-m", "pip", "install", "--upgrade", f"{package}{version_spec}"]
+                try:
+                    subprocess.run(install_cmd, check=True, capture_output=True, text=True)
+                    print_pass(f"Successfully installed/updated {package}")
+                except subprocess.CalledProcessError as e:
+                    print_fail(f"Failed to install/update {package}: {e.stderr}")
+                    exit(1)
+
+        # Final verification
+        for package, constraints in version_dict.items():
+            valid, info = is_version_valid(package, constraints)
+            if not valid:
+                raise Exception(f"Dependency verification failed for {package}: {info}")
+
+        print_pass("Python prerequisites verified successfully.")
+
     except Exception as err:
-        print_fail(
-            f"{err}. Please make sure the dependencies ({generate_dependency_message(version_dict)}) "
-            "are satisfied before running ./setup script."
-        )
+        if ce_as_vm_check():
+            print_fail(f"{err}. Please make sure the dependencies ({generate_dependency_message(version_dict)}) are satisfied before running ./setup script.")
+        else:
+            print_fail(f"Error encountered while installing ({generate_dependency_message(version_dict)}). Error: {err}")
         exit(1)
-    print_pass("Python prerequisites verified successfully.")
 
 
 def set_up_ha_values():
-    global is_ha
+    global is_ha, CLOUD_EXCHANGE_CONFIG
     # Base version for HA support is 5.0.0
     install_version = AVAILABLE_INPUTS["INSTALL_VERSION"]
     if install_version < MIN_HA_SUPPORTED_VERSION:
         return
 
-    while True:
-        try:
-            is_ha = strtobool(
-                input("\n> Do you want to setup HA Parameters? [y/n]: ")
-                .strip()
-                .lower()
-            )
-        except Exception:
-            print("Invalid input. Please provide a valid input.")
-            continue
-        if not is_ha:
-            AVAILABLE_INPUTS.pop("HA_NFS_DATA_DIRECTORY", None)
-            AVAILABLE_INPUTS.pop("HA_IP_LIST", None)
-            AVAILABLE_INPUTS.pop("HA_CURRENT_NODE", None)
-            AVAILABLE_INPUTS.pop("HA_PRIMARY_NODE_IP", None)
-            # previously we have HA and now we want to setup on-prem/OVA.
-            if (
-                "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS.keys()
-                and AVAILABLE_INPUTS.get("LOCATION", None)
-                and AVAILABLE_INPUTS.get("LOCATION", None)
-                not in [".env.keys", "/etc/.env.keys"]
-            ):
-                dest_location = None
-                env_file_location = None
-                if ce_as_vm_check():
-                    dest_location = "/etc/"
-                    env_file_location = "/etc/.env.keys"
-                else:
-                    dest_location = "."
-                    env_file_location = ".env.keys"
+    try:
+        is_ha = CLOUD_EXCHANGE_CONFIG.get("HA_ENABLED", False) or (True if AVAILABLE_INPUTS.get("HA_ENABLED", "False").strip().lower() == "true" else False)
+    except Exception:
+        print("Invalid input. Please provide a valid input.")
+    if not is_ha:
+        AVAILABLE_INPUTS.pop("HA_NFS_DATA_DIRECTORY", None)
+        AVAILABLE_INPUTS.pop("HA_IP_LIST", None)
+        AVAILABLE_INPUTS.pop("HA_CURRENT_NODE", None)
+        AVAILABLE_INPUTS.pop("HA_PRIMARY_NODE_IP", None)
+        # previously we have HA and now we want to setup on-prem/OVA.
+        if (
+            "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS.keys()
+            and AVAILABLE_INPUTS.get("LOCATION", None)
+            and AVAILABLE_INPUTS.get("LOCATION", None)
+            not in [".env.keys", "/etc/.env.keys"]
+        ):
+            dest_location = None
+            env_file_location = None
+            env_file = None
+            if ce_as_vm_check():
+                dest_location = "/etc/"
+                env_file_location = "/etc/.env.keys"
+                env_file = "./.env"
+            else:
+                dest_location = "."
+                env_file_location = ".env.keys"
+                env_file = "./.env"
+            if os.path.isfile(AVAILABLE_INPUTS.get('LOCATION')):
                 command = f"{SUDO_PREFIX} mv {AVAILABLE_INPUTS.get('LOCATION', None)} {dest_location}"
                 execute_shell_command(command)
-                AVAILABLE_INPUTS["LOCATION"] = env_file_location
-            return
-        break
+            AVAILABLE_INPUTS["LOCATION"] = env_file_location
+            AVAILABLE_INPUTS["ENV_FILE"] = env_file
+        return
 
     check_python_prerequisites()
 
-    while True:
-        location = input(
-            f"> Please provide the location of the NFS mount directory (Current: '{AVAILABLE_INPUTS.get('HA_NFS_DATA_DIRECTORY', '')}'): "
-        ).strip().rstrip("/") or AVAILABLE_INPUTS.get(
-            "HA_NFS_DATA_DIRECTORY", ""
-        )
-        if os.path.isdir(location):
-            # previously we have on-prem / OVA and now we want to setup HA.
-            if is_ha and AVAILABLE_INPUTS.get("LOCATION", None) in [
-                ".env.keys",
-                "/etc/.env.keys",
-            ]:
-                command = (
-                    f"{SUDO_PREFIX} mv {AVAILABLE_INPUTS.get('LOCATION')} {location}/"
-                )
+    location = CLOUD_EXCHANGE_CONFIG.get("HA_NFS_DATA_DIRECTORY", "").strip().rstrip("/") or AVAILABLE_INPUTS.get(
+        "HA_NFS_DATA_DIRECTORY", ""
+    )
+    if os.path.isdir(location):
+        create_required_files(location)
+        # previously we have on-prem / OVA and now we want to setup HA.
+        if is_ha and AVAILABLE_INPUTS.get("LOCATION", None) in [
+            ".env.keys",
+            "/etc/.env.keys",
+        ]:
+            if os.path.isfile(AVAILABLE_INPUTS.get('LOCATION')):
+                command = f"{SUDO_PREFIX} mv {AVAILABLE_INPUTS.get('LOCATION')} {location}/config/"
                 execute_shell_command(command)
-                AVAILABLE_INPUTS["LOCATION"] = f"{location}/.env.keys"
-            break
+            AVAILABLE_INPUTS["LOCATION"] = f"{location}/config/.env.keys"
+            AVAILABLE_INPUTS["ENV_FILE"] = f"{location}/config/.env"
+
+        # previously we have ha with .env.keys stored at $HA_NFS_DATA_DIRECTORY/.env.keys now its stored at
+        # $HA_NFS_DATA_DIRECTORY/config/.env.keys
+        if (
+            "IS_MPASS_CONFIGURED" in AVAILABLE_INPUTS.keys()
+            and AVAILABLE_INPUTS.get("LOCATION", None)
+            and AVAILABLE_INPUTS.get("LOCATION", None)
+            not in [".env.keys", "/etc/.env.keys"]
+            and AVAILABLE_INPUTS.get("LOCATION", None) != f"{location}/config/.env.keys"
+        ):
+            if os.path.isfile(AVAILABLE_INPUTS.get('LOCATION')):
+                command = f"{SUDO_PREFIX} mv {AVAILABLE_INPUTS.get('LOCATION')} {location}/config/"
+                execute_shell_command(command)
+            AVAILABLE_INPUTS["LOCATION"] = f"{location}/config/.env.keys"
+            AVAILABLE_INPUTS["ENV_FILE"] = f"{location}/config/.env"
+
+    else:
         print("The provided path doesn't exist. Please provide a valid path.")
+        exit(1)
     try:
         get_all_existed_env_variable(
             f"{location}/config/.env", override=False
@@ -2728,7 +2677,6 @@ def set_up_ha_values():
         pass  # For fresh setup, shared .env doesn't exist
     AVAILABLE_INPUTS["HA_NFS_DATA_DIRECTORY"] = location
 
-    create_required_files(location)
     ask_for_ha_values(primary=True)
 
     update_yaml_file("docker-compose")
@@ -2820,7 +2768,7 @@ def get_os_name_and_major_version():
                     if pretty_name and version_id:
                         break
             if "ubuntu" in pretty_name.lower():
-                if version_id.split(".")[0] in ["20", "22"]:
+                if version_id.split(".")[0] in ["20", "22", "24"]:
                     os_version = version_id.split(".")[0]
                 os_name = "Ubuntu"
                 allow = True
@@ -2856,14 +2804,14 @@ def collect_host_platform_details():
     azure = "azure"
     vmware = "vmware"
     microsoft = "microsoft" # Hyper-V
-    unknown = "unknown"
+    custom = "custom"
 
     base_url = "http://169.254.169.254"
 
     def check_platform(url, headers, machine_type):
         try:
             url_obj = urllib.request.Request(url, headers=headers)
-            with urllib.request.urlopen(url_obj, timeout=10) as response:
+            with urllib.request.urlopen(url_obj, timeout=5) as response:
                 if response.getcode() == 200:
                     return machine_type
                 return False
@@ -2894,7 +2842,7 @@ def collect_host_platform_details():
             request = urllib.request.Request(
                 token_url, headers=headers, method="PUT"
             )
-            with urllib.request.urlopen(request, timeout=10) as response:
+            with urllib.request.urlopen(request, timeout=5) as response:
                 TOKEN = response.read().decode("utf-8")
 
         except Exception:
@@ -2928,13 +2876,9 @@ def collect_host_platform_details():
         return azure
     else:
         hypervisor_vendor = get_hypervisor_vendor()
-        if hypervisor_vendor in [ vmware, microsoft ]:
+        if hypervisor_vendor in [vmware, microsoft]:
             return hypervisor_vendor
-        return unknown
-
-
-def generate_ce_setup_id():
-    return b64encode(token_bytes(32)).decode('utf-8')
+        return custom
 
 
 def collect_host_details():
@@ -2954,6 +2898,7 @@ def collect_host_details():
         )
     except Exception:
         pass
+
 
 def check_and_apply_rabbitmq_flags():
     """
@@ -2981,9 +2926,127 @@ def check_and_apply_rabbitmq_flags():
             "You may need to delete the rabbitmq data from data/rabbitmq/data/ directory and before starting the Cloud Exchange."
         )
 
+
+class CustomWFile:
+    def __init__(self, content_length: int = None) -> None:
+        self.content_length = content_length
+
+    def write(self, b):
+        if isinstance(b, bytes):
+            b = b.decode("utf-8").strip()
+
+        if self.content_length:
+            splitted_line = b.split(":", maxsplit=1)  # log_level, log_message
+            if len(splitted_line) > 1:
+                print(splitted_line[1])
+            self.content_length = None
+        else:
+            self.content_length = b
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class CustomHandler:
+    def __init__(self):
+        body = b"{}"
+        self.headers = {"Content-Length": str(len(body))}
+        self.rfile = io.BytesIO(body)
+        self.wfile = CustomWFile()
+
+    # If the original handler has more methods used elsewhere, define them here as pass or print
+    def __getattr__(self, name):
+        # This will catch any undefined method calls and mimic them
+        def method(*args, **kwargs):
+            pass
+
+        return method
+
+def verify_mount_status():
+    result = subprocess.run(
+        "df -h | grep CloudExchange | grep '/opt/shared/data'",
+        shell=True,
+        capture_output=True,
+        text=True
+    )
+    return True if result.returncode == 0 else False
+
+
+def setup_primary_volume(node_ip):
+    # For upgrade scenario, check the mount status, if its mounted, skip the installation.
+    configure_logger(
+        log_file_max_bytes=CLOUD_EXCHANGE_CONFIG.get("LOG_FILE_MAX_BYTES", (10 * 1024 * 1024)),
+        backup_count=CLOUD_EXCHANGE_CONFIG.get("LOG_FILE_BACKUP_COUNT", 5),
+        log_file_name="setup.log",
+        logs_directory="data/logs",
+        should_add_stdout=False,
+    )
+    new_shared_directory_path = "/opt/shared"
+    exists = verify_mount_status()
+    if exists:
+        print("Gluster volume for CloudExchange is already mounted at path '/opt/shared/data', skipping installation.")
+        return
+    custom_handler = CustomHandler()
+
+    try:
+        glusterfs_base_port = int(CLOUD_EXCHANGE_CONFIG.get("GLUSTERFS_BASE_PORT", GLUSTERFS_BASE_PORT))
+        glusterfs_max_port = int(CLOUD_EXCHANGE_CONFIG.get("GLUSTERFS_MAX_PORT", GLUSTERFS_MAX_PORT))
+    except Exception:
+        glusterfs_base_port = GLUSTERFS_BASE_PORT
+        glusterfs_max_port = GLUSTERFS_MAX_PORT
+
+    response = install_gluster(
+        handler=custom_handler,
+        shared_directory_path=new_shared_directory_path,
+        glusterfs_base_port=glusterfs_base_port,
+        glusterfs_max_port=glusterfs_max_port,
+        should_end_stream=False,
+    )
+    if response[1] != 200:
+        print_fail("Failed to install glusterfs.")
+        exit(1)
+    # Verify gluster volume status
+    response = verify_start_create_volume(
+        handler=custom_handler, current_node_ip=node_ip
+    )
+    if response[1] != 200:
+        print_fail("Failed to create gluster volume.")
+        exit(1)
+    # Verify volume mount
+    response = ensure_volume_mounted(
+        handler=custom_handler,
+        shared_directory_path=new_shared_directory_path,
+        current_node_ip=node_ip,
+        should_end_stream=False,
+    )
+    if response[1] != 200:
+        print_fail("Failed to mount gluster volume at `/opt/shared/data`.")
+        exit(1)
+
+
+def remove_passwords_from_config():
+    update_data = {
+        "MAINTENANCE_PASSWORD": "",
+        "CE_SSL_CERTIFICATE_PASSWORD": "",
+    }
+    try:
+        update_cloudexchange_config(updated_config=update_data)
+        print(
+            "Removed MAINTENANCE_PASSWORD and CE_SSL_CERTIFICATE_PASSWORD from cloudexchange.config file."
+        )
+    except Exception:
+        print(
+            "Error encountered while removing MAINTENANCE_PASSWORD and CE_SSL_CERTIFICATE_PASSWORD "
+            "from cloudexchange.config file."
+        )
+
+
 def run():
     try:
-        global should_ignore
+        global should_ignore, avoid_service_restart, is_ha
         parser = argparse.ArgumentParser(
             prog="./setup",
             description="Setup the environment for the Netskope CE.",
@@ -3003,9 +3066,25 @@ def run():
             default=False,
             help="Ignore failures and continue.",
         )
+        parser.add_argument(
+            "--avoid-service-restart",
+            nargs="?",
+            const=True,
+            default=False,
+            help="Avoid restarting the cloud-exchange service.",
+        )
+        parser.add_argument(
+            "--check-prerequisites",
+            nargs="?",
+            choices=["SA", "HA"],
+            default=None,
+            help="Check prerequisites for deployment type (SA or HA). Defaults to None if not passed."
+        )
         args = parser.parse_args()
         location = args.location.rstrip("/")
         should_ignore = args.ignore_failures
+        avoid_service_restart = args.avoid_service_restart
+        should_check_prerequisites = args.check_prerequisites
 
         print_banner()
         if not ce_as_vm_check():
@@ -3020,9 +3099,37 @@ def run():
                 print_warning(
                     "Ignoring the SE linux... '--ignore-failures' flag applied."
                 )
+
+        read_cloud_exchange_config_file()
+        if should_check_prerequisites is not None:
+            set_proxy()
+            check_prerequisites()
+            if isinstance(should_check_prerequisites, str) and should_check_prerequisites.strip() == "HA":
+                check_python_prerequisites()
+            if (Status.FAIL in CHECKS.values()) or (
+                 Status.NOT_VERIFIED
+                    in [
+                        CHECKS.get("Podman-Plugin", None),
+                        CHECKS.get("Podman", None),
+                        CHECKS.get("Podman-Compose", None),
+                    ]
+                ):
+                print(
+                    "\n\n\033[1;31mVerification Failed. One or more prerequisite checks are not met. Please address the minimum requirements and re-run the setup script.\033[0;37m\n"
+                )
+                exit(1)
+            exit(0)
+
         fetch_container_info()
+        check_management_service_running()
         create_env_if_not_exist()
         set_sudo_prefix()
+
+        if (location == "") and (
+            CLOUD_EXCHANGE_CONFIG.get("HA_CURRENT_NODE") != CLOUD_EXCHANGE_CONFIG.get("HA_PRIMARY_NODE_IP")
+        ):
+            location = "/opt/shared/data"  # The mount path for the gluster is not configurable for user.
+
         if location:
             check_python_prerequisites()
             get_all_existed_env_variable()  # Get local env variables
@@ -3038,22 +3145,33 @@ def run():
             if not ce_as_vm_check():
                 update_yaml_file("podman-compose")
         else:
-            get_all_existed_env_variable()  # Get already exsting env variables
+            get_all_existed_env_variable()  # Get already existing env variables
             location = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY", "")
+            current_node_ip = CLOUD_EXCHANGE_CONFIG.get("HA_PRIMARY_NODE_IP", "") or AVAILABLE_INPUTS.get("HA_PRIMARY_NODE_IP", "")
+            if len(current_node_ip) > 0:
+                setup_primary_volume(node_ip=current_node_ip)
+                location = "/opt/shared/data"
+                AVAILABLE_INPUTS["HA_NFS_DATA_DIRECTORY"] = location
+
             get_all_existed_env_variable(".env.ceversion")
             get_all_existed_env_variable(f"{location}/config/.env.ceversion")
             AVAILABLE_INPUTS.update(LATEST_TAG_AND_VERSION)
             if ce_as_vm_check():
                 set_ce_version_for_vm()
-            ask_for_initial_inputs()
+            set_proxy()
             create_persistent_dirs()
             set_up_ha_values()
-            location = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY")
+            if CLOUD_EXCHANGE_CONFIG.get("HA_ENABLED", False):
+                location = AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY")
 
         collect_host_details()
         check_prerequisites()
         migrate_mongo()
         check_and_apply_file_permissions()
+        AVAILABLE_INPUTS["CONTAINERIZATION_PLATFORM"] = (
+            f'"{CONTAINERIZATION_PLATFORM}"'
+        )
+        AVAILABLE_INPUTS["COMPOSE_VERSION"] = f'"{COMPOSE_VERSION}"'
 
         if (Status.FAIL in CHECKS.values()) or (
             Status.NOT_VERIFIED
@@ -3073,41 +3191,9 @@ def run():
             else:
                 exit(1)
 
-        if Status.NOT_VERIFIED in CHECKS.values():
-            shouldContinue = (
-                getpass(
-                    "\n\n\033[1;93mOne or more prerequisite checks could not be verified. Press Enter to continue \033[0;37m"
-                )
-                .strip()
-                .lower()
-            )
-
         if not args.location.rstrip("/"):
-            ask_for_config_params()
+            set_config_params()
 
-        code_tag_version = AVAILABLE_INPUTS.get("CORE_TAG", "").strip()
-        if "3-latest" not in code_tag_version:
-            # len == 1 as .gitkeep file will always be there in the ca_certs folder
-            custom_cert_path = "./data/ca_certs"
-            if location:
-                custom_cert_path = f"{location}/config/ca_certs"
-            if len(os.listdir(custom_cert_path)) == 1:
-                # Ask for custom ca certs
-                custom_ssl_confirm = (
-                    input(
-                        "\n> Do you want to provide custom CA certs? (y/n): "
-                    )
-                    .strip()
-                    .lower()
-                )
-                if custom_ssl_confirm in ["y", "yes"]:
-                    print(
-                        f"\n\033[1;37mPlease add your certs to {custom_cert_path} and Re-run the script.\033[0;37m"
-                    )
-            else:
-                print(
-                    f"CA certificate successfully found in the {custom_cert_path} folder."
-                )
         assign_memory_to_rabbitmq_container()
         mpass = None
         if AVAILABLE_INPUTS.get("MAINTENANCE_PASSWORD", ""):
@@ -3121,32 +3207,184 @@ def run():
         if AVAILABLE_INPUTS.get("CE_SETUP_ID", None) and not AVAILABLE_INPUTS.get("MAINTENANCE_PASSWORD", None):
             mpass = change_maintenance_password(mpass, False)
         mongo_feature_compatibility(mpass)
-
         put_env_variable(AVAILABLE_INPUTS)
-        take_env_backup(AVAILABLE_INPUTS)
         check_and_apply_rabbitmq_flags()
-        message = "\nSetup completed successfully...\n\nExecute this command to start the CE:\n  >"
         if location:
-            put_env_variable(AVAILABLE_INPUTS, f"{location}/config/.env")
-            message = "\nSetup completed successfully...\n\nExecute this command in primary node to start the CE:\n  >"
+            AVAILABLE_INPUTS["ENV_FILE"] = f"{location}/config/.env"
+            put_env_variable(AVAILABLE_INPUTS, AVAILABLE_INPUTS["ENV_FILE"])
+            take_env_backup(AVAILABLE_INPUTS["ENV_FILE"], ".env.ha.backup")
 
-        print(f"{message} sudo ./start")
-        print("\nPlease re-run the setup script to update any parameter.\n")
+        if location or is_ha:
+            remove_unwanted_fields()
+        put_env_variable(AVAILABLE_INPUTS)
+        take_env_backup(".env", ".env.backup")
+        secret_location = get_secret_location(AVAILABLE_INPUTS)
+        if secret_location.strip():
+            take_env_backup(secret_location.strip(), ".env.key.backup")
+        check_and_apply_rabbitmq_flags()
+        remove_passwords_from_config()  # Remove only on successfull setup.
+        message = "\nSetup completed successfully..."
+        print(f"{message}")
 
     except KeyboardInterrupt:
-        put_env_variable(AVAILABLE_INPUTS)
         if location:
-            put_env_variable(AVAILABLE_INPUTS, f"{location}/config/.env")
+            AVAILABLE_INPUTS["ENV_FILE"] = f"{location}/config/.env"
+            put_env_variable(AVAILABLE_INPUTS, AVAILABLE_INPUTS["ENV_FILE"])
+        if location or is_ha:
+            remove_unwanted_fields()
+        put_env_variable(AVAILABLE_INPUTS)
         print(
             "\nSetup stopped... The entered configurations will be saved...\n"
         )
     except Exception as e:
         print(e)
+        exit(1)
 
-    print(
-        "\nWarning: It is recommended to take an external backup of the .env file located in this directory."
-    )
+
+def setup_systemd_service(service_name):
+    """
+    Creates, installs, enables, and starts a systemd service.
+    :param service_name: Name of the systemd service (without .service extension)
+    """
+    working_directory = os.path.dirname(os.path.abspath(__file__))
+    service_file_path = f"/etc/systemd/system/{service_name}.service"
+    exec_command = os.path.join(working_directory, "start_management_server")
+    service_content = f"""[Unit]
+Description={service_name} Service
+After=network.target
+
+[Service]
+User=root
+WorkingDirectory={working_directory}
+ExecStart={exec_command}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+"""
+    try:
+        # Write the service file
+        with open(service_file_path, "w") as f:
+            f.write(service_content)
+
+        # Set correct permissions
+        os.chmod(service_file_path, 0o644)
+
+        # Reload systemd, enable and start the service
+        os.system("systemctl daemon-reload")
+        os.system(f"systemctl enable {service_name}")
+        os.system(f"systemctl restart {service_name}")
+
+        print(f"Management service {service_name} has been installed and started successfully.")
+    except Exception as e:
+        print(f"Error setting up the Management service. Error: {e}")
+
+
+def check_python_version():
+    try:
+        version_info = sys.version_info
+        version_str = f"{version_info.major}.{version_info.minor}.{version_info.micro}"
+
+        if version_info.major < MIN_PYTHON_MAJOR or (
+            version_info.major == MIN_PYTHON_MAJOR
+            and version_info.minor < MIN_PYTHON_MINOR
+        ):
+            print_fail(
+                f"Requires Python {MIN_PYTHON_MAJOR}.{MIN_PYTHON_MINOR}+, found {version_str}"
+            )
+            sys.exit(1)
+
+        print_pass(
+            f"Python {version_str} meets requirement ({MIN_PYTHON_MAJOR}.{MIN_PYTHON_MINOR}+)"
+        )
+
+        try:
+            pip_version = subprocess.run(
+                [sys.executable, "-m", "pip", "--version"],
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            print_pass(f"Pip: {pip_version}")
+        except subprocess.CalledProcessError:
+            print_fail("Could not determine pip version for Python3, Please install python3-pip or equivalent package for your system")
+            sys.exit(1)
+
+    except Exception as e:
+        print_fail(f"Error checking Python version: {e}")
+        sys.exit(1)
+
+
+def check_venv_available():
+    try:
+        import venv
+        print_pass("venv module is available")
+    except ImportError:
+        print_fail(
+            "venv module is not available in Python3, Please install python3-venv or equivalent package for your system"
+        )
+        sys.exit(1)
+    try:
+        import ensurepip
+        print_pass("ensurepip module is available")
+    except ImportError:
+        print_fail(
+            "ensurepip module is not available in Python3, Please install python3-ensurepip or equivalent package for your system"
+        )
+        sys.exit(1)
+    return True
+
+
+def setup_virtual_environment():
+    venv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), VENV_DIR)
+    should_install_venv = True
+    if os.path.exists(venv_path) and os.path.isdir(venv_path):
+        print(f"Virtual environment '{VENV_DIR}' already exists.")
+        print("Using existing virtual environment.")
+        activate_script_path = os.path.join(venv_path, "bin", "activate")
+        python_script_path = os.path.join(venv_path, "bin", "python")
+        if not os.path.exists(activate_script_path) or not os.path.exists(python_script_path):
+            print_fail(f"Could not found activate or python script in '{VENV_DIR}/bin'")
+            should_install_venv = True
+        else:
+            should_install_venv = False
+
+    if should_install_venv:
+        print(f"Creating new virtual environment '{VENV_DIR}'...")
+        try:
+            subprocess.run([sys.executable, "-m", "venv", "--clear", VENV_DIR], check=True)
+            print_pass("Virtual environment created successfully")
+        except subprocess.CalledProcessError as e:
+            print_fail(f"Failed to create virtual environment: {e}")
+            sys.exit(1)
+
+
+def ensure_environment():
+    print("Checking Python version...")
+    check_python_version()
+
+    print("Checking if venv module is available...")
+    check_venv_available()
+
+    setup_virtual_environment()
 
 
 if __name__ == "__main__":
-    run()
+    try:
+        ensure_environment()
+        run()
+        if is_management_service_running and avoid_service_restart:
+            print(
+                f"Management service {CLOUD_EXCHANGE_LINUX_SERVICE_NAME} is running, skipping installation."
+            )
+        else:
+            setup_systemd_service(
+                CLOUD_EXCHANGE_LINUX_SERVICE_NAME
+            )
+    except Exception as e:
+        print(e)
+        exit(1)
