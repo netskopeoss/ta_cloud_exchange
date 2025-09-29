@@ -109,12 +109,12 @@ remote_password = None
 remote_ce_dir = None
 auth_method = None
 ssh_auth = []
-sudo_remote_password = None
+sudo_remote_passwod = None
 shared_drive_path = None
 maintenance_password = None
 ce_as_a_vm_dest = False
 envs = None
-latest_version = "5.1.0"
+latest_version = "5.1.2"
 
 
 def read_env_file(file_path):
@@ -175,7 +175,7 @@ def stop():
     global remote_user
     global ssh_auth
     global remote_ce_dir
-    global sudo_remote_password
+    global sudo_remote_passwod
     try:
         output, success = run_ssh_scp(
             "ssh",
@@ -183,7 +183,7 @@ def stop():
             "ssh",
             *ssh_auth,
             f"{remote_user}@{remote_host}",
-            f"cd {remote_ce_dir} && echo {sudo_remote_password} | sudo -S ./stop",
+            f"cd {remote_ce_dir} && echo {sudo_remote_passwod} | sudo -S ./stop",
             print_output=True
         )
         if not success:
@@ -239,7 +239,7 @@ def backup():
     global remote_user
     global remote_host
     global ssh_auth
-    global sudo_remote_password
+    global sudo_remote_passwod
     global shared_drive_path
     try:
         if int(option) == 3:
@@ -253,10 +253,10 @@ def backup():
             backup_folders_list = "mongo-data/* rabbitmq/data/* plugins/* repos/* custom_plugins/*"
         cmd = (
             f"cd {os.path.join(remote_ce_dir, 'data/')} && "
-            f"echo {sudo_remote_password} | sudo -S zip -o -r ce_backup.zip {backup_folders_list}"
+            f"echo {sudo_remote_passwod} | sudo -S zip -o -r ce_backup.zip {backup_folders_list}"
         )
         if int(option) == 3:
-            cmd += f" && cd {os.path.join(remote_ce_dir, 'data/')} && echo {sudo_remote_password} | sudo -S zip -r ce_backup.zip {backup_shared_dir_folders}"  # NOQA
+            cmd += f" && cd {os.path.join(remote_ce_dir, 'data/')} && echo {sudo_remote_passwod} | sudo -S zip -r ce_backup.zip {backup_shared_dir_folders}"  # NOQA
         output, success = run_ssh_scp(
             "ssh",
             remote_password,
@@ -311,7 +311,7 @@ def get_ssh_credentials():
     global remote_ce_dir
     global ce_as_a_vm_dest
     global ssh_auth
-    global sudo_remote_password
+    global sudo_remote_passwod
     try:
         tried = 0
         while not remote_user and tried < 3:
@@ -436,13 +436,13 @@ def get_ssh_credentials():
         tried = 0
         is_ce_as_a_vm = check_for_ce_as_a_vm(remote_user, remote_host, remote_password, ssh_auth)
         if is_ce_as_a_vm:
-            sudo_remote_password = remote_password
+            sudo_remote_passwod = remote_password
         else:
-            sudo_remote_password = getpass(
+            sudo_remote_passwod = getpass(
                 f"Enter the sudo password for your user {remote_user} [default: user's ssh password]: "
             ).strip()
-            if not sudo_remote_password or sudo_remote_password == "":
-                sudo_remote_password = remote_password
+            if not sudo_remote_passwod or sudo_remote_passwod == "":
+                sudo_remote_passwod = remote_password
         tried = 0
         remote_ce_dir = None
         while not remote_ce_dir and tried < 3:
@@ -549,7 +549,7 @@ def get_ssh_credentials():
                     "Invalid path provided after 3 tries. Exiting..."
                 )
         print_with_color(
-            "Successfully collected SSH Credentials and Required information for old machine.",
+            "Succesfully collected SSH Credentials and Required information for old machine.",
             Color.BOLD
         )
     except Exception as error:
@@ -766,14 +766,14 @@ steps_method_mapping = {
 prerequisite_steps = {
     1: [
         "Ensure that zip and unzip are installed on both the old and current machines.",
-        "Grab the MAINTENANCE_PASSWORD password from old standalone setup. "
+        "Grab the MAITENANCE_PASSWORD password from old standalone setup. "
         "This will be required during the installation of the new CE setup"
         " (as the value for Maintenance Password)."
         "If the maintenance password is lost, the data could not be retained."
     ],
     2: [
         "Ensure that zip and unzip are installed on both the old and current machines.",
-        "Grab the MAINTENANCE_PASSWORD password from old standalone setup. "
+        "Grab the MAITENANCE_PASSWORD password from old standalone setup. "
         "This will be required during the installation of the new CE setup"
         " (as the value for Maintenance Password)."
         "If the maintenance password is lost, the data could not be retained."
@@ -782,7 +782,7 @@ prerequisite_steps = {
     ],
     3: [
         "Ensure that zip and unzip are installed on both the old and current machines.",
-        "Grab the MAINTENANCE_PASSWORD password from old HA setup. "
+        "Grab the MAITENANCE_PASSWORD password from old HA setup. "
         "This will be required during the installation of the new CE setup"
         " (as the value for Maintenance Password)."
         "If the maintenance password is lost, the data could not be retained."
@@ -841,32 +841,11 @@ options_steps_mapping = {
 
 if __name__ == "__main__":
     atexit.register(on_exit)
-    # message = (
-    #     f"{Color.RED}{Color.BOLD}Note:- If you are proceeding for the "
-    #     "Standalone to HA or HA to HA migration, Please make sure "
-    #     "\n\t\tthat the shared drive is mounted on the destination machine"
-    #     " which will be used in the HA and\n\t\t make sure all the services"
-    #     " are up and running. Currently we do not support "
-    #     f"HA to Standalone migration.{Color.END}"
-    # )
-    # print_with_color(
-    #     f"""
-    #     {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
-
-    #     {message}
-
-    #     {Color.BOLD}Select the option:
-    #         1. Migrate to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone.
-    #         2. Migrate to v5.1.0 HA from v4.2.0 or v5.0.x Standalone.
-    #         3. Migrate to v5.1.0 HA from v5.0.0 or v5.0.1 HA
-    #     """,
-    #     Color.BOLD
-    # )
     print_with_color(
         f"""
         {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
 
-        {Color.GREEN}{Color.BOLD}Migrating to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone (Containerised or CE as a VM).
+        {Color.GREEN}{Color.BOLD}Migrating to v{latest_version} Standalone from v5.x Standalone (Containerised or CE as a VM).
         """,
         Color.BOLD
     )

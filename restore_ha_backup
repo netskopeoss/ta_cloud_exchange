@@ -1,13 +1,14 @@
 #!/bin/sh
-set -a
+
 . ./.env || (echo "Please run setup first" && exit 1)
-. ${ENV_FILE}
+
+if [ -n "${HA_NFS_DATA_DIRECTORY}" ]; then
+    . ${HA_NFS_DATA_DIRECTORY}/config/.env &> /dev/null
+fi
 
 ([ -n "${HA_NFS_DATA_DIRECTORY}" ] && [ -n "$HA_PRIMARY_NODE_IP" ] && [ -n "$HA_IP_LIST" ]) || (echo "Please configure HA parameters in setup." && exit 1)
 
 . ${LOCATION}
-set +a
-
 if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1 ]; then  
     if [ `grep -c "7.9" /etc/redhat-release` -ge 1 ]; then
         docker compose version &> /dev/null
