@@ -1,12 +1,9 @@
 #!/bin/sh
 
-set -a
 . ./.env
-. ${ENV_FILE}
-set +a
-
-VENV_DIR=".cevenv"
-ACTIVATE_SCRIPT_PATH="${VENV_DIR}/bin/activate"
+if [ -n "${HA_NFS_DATA_DIRECTORY}" ]; then
+    . ${HA_NFS_DATA_DIRECTORY}/config/.env
+fi
 
 if [ -f /etc/redhat-release ] && [ `grep -c "Red Hat" /etc/redhat-release` -eq 1 ]; then  
     if [ `grep -c "7.9" /etc/redhat-release` -ge 1 ]; then
@@ -58,20 +55,6 @@ else
 fi
 
 if [ -n "${HA_IP_LIST}" ]; then
-    # Check if virtual environment already exists
-    if [ -d "${VENV_DIR}" ] && [ -f "${ACTIVATE_SCRIPT_PATH}" ]; then
-        echo "Virtual environment '$VENV_DIR' already exists."
-        echo "Using existing virtual environment."
-        echo "${ACTIVATE_SCRIPT_PATH}"
-        . "${ACTIVATE_SCRIPT_PATH}"
-    else
-        echo "Virtual environment '${VENV_DIR}' or '${ACTIVATE_SCRIPT_PATH}' does not exist, Please run setup first."
-        exit 1
-    fi
-fi
-
-
-if [ -n "${HA_IP_LIST}" ]; then
     ./replica_set --remove
 
     RETURN=$?
@@ -88,4 +71,3 @@ if [ -n "${HA_IP_LIST}" ]; then
 fi
 
 compose_command down -v
-

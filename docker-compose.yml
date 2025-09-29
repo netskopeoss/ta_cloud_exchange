@@ -3,7 +3,7 @@ services:
     image: index.docker.io/${RABBITMQ_TAG}
     user: "1001:1001"
     env_file:
-      - ${ENV_FILE:-.env}
+      - ./.env
       - ${LOCATION}
     environment:
       - RABBITMQ_NODENAME=rabbit@rabbitmq-stats
@@ -19,9 +19,6 @@ services:
       - ./data/rabbitmq/custom.conf:/etc/rabbitmq/conf.d/custom.conf:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq/mnesia:z
       - ./data/database-init/load_env.sh:/opt/load_env.sh:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt:/etc/rabbitmq/conf.d/rabbitmq_cert.crt:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.key:/etc/rabbitmq/conf.d/rabbitmq_cert_key.key:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_ca.crt:/etc/rabbitmq/conf.d/rabbitmq_cert_ca.crt:z
     logging:
       options:
         max-size: "10m"
@@ -45,15 +42,12 @@ services:
     image: index.docker.io/${MONGO_TAG}
     user: mongodb
     env_file:
-      - ${ENV_FILE:-.env}
+      - ./.env
       - ${LOCATION}
     volumes:
       - ./data/mongo-data/data/db:/data/db:z
       - ./data/database-init/mongo-init.sh:/docker-entrypoint-initdb.d/mongo-init.sh:z
       - ./data/database-init/load_env.sh:/opt/load_env.sh:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/tls_cert.crt:/opt/tls_cert.pem:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_key.pem:/opt/tls_cert_key.pem:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/tls_cert_ca.crt:/opt/tls_cert_ca.crt:z
     environment:
       - MONGODB_ADVERTISED_HOSTNAME=mongodb-primary
       - MONGO_INITDB_ROOT_USERNAME=root
@@ -70,32 +64,22 @@ services:
       resources:
         limits:
           memory: ${MONGODB_RAM_RESOURCES:-3072}M
-    entrypoint:
-      [
-        "/bin/bash",
-        "-c",
-        "source /opt/load_env.sh && docker-entrypoint.sh mongod --tlsMode preferTLS --tlsCertificateKeyFile /opt/tls_cert_key.pem --tlsCAFile /opt/tls_cert_ca.crt --tlsDisabledProtocols TLS1_0,TLS1_1"
-      ]
+    entrypoint: ["/bin/bash", "-c", "source /opt/load_env.sh && docker-entrypoint.sh mongod"]
   core:
     image: index.docker.io/${CORE_TAG}
     env_file:
-      - ${ENV_FILE:-.env}
+      - ./.env
       - ${LOCATION}
     volumes:
       - ./data/custom_plugins:/opt/netskope/plugins/custom_plugins:z
       - ./data/ca_certs:/usr/local/share/ca-certificates:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs:/usr/local/share/ca-certificates/ca.crt:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs:/usr/local/share/ca-certificates/mongodb_rabbitmq_certs:z
-      - ./data/ssl_certs:/opt/certs:z
       - ./data/rabbitmq/data:/var/lib/rabbitmq:z
-      - ./data/files-data:/etc/files-data:z
       - nfs_repos:/opt/netskope/repos
       - nfs_plugins:/opt/netskope/plugins
       - ./data/healthcheck.sh:/opt/healthcheck.sh:z
       - ./data/database-init/load_env.sh:/opt/load_env.sh:z
     environment:
       - JWT_SECRET=${JWT_SECRET}
-      - CHAINLIT_AUTH_SECRET=${JWT_SECRET}
       - JWT_ALGORITHM=HS256
       - ENABLE_CELERY_BEAT=true
       - DOCKER_USERNAME=${DOCKER_USERNAME:-}
@@ -144,20 +128,12 @@ services:
   ui:
     image: index.docker.io/${UI_TAG}
     restart: always
-    env_file:
-      - ${ENV_FILE}
-      - ${LOCATION}
     environment:
       - CE_API_URL=http://core
       - CE_API_PORT=8000
-      - TLS_VERSION=${TLS_VERSION:-TLSv1.3}
-      - CE_MANAGEMENT_PORT=${CE_MANAGEMENT_PORT:-8000}
+      - TLS_VERSION=${ENABLE_TLS_V_1_2:-TLSv1.3}
     volumes:
       - ./data/ssl_certs:/tmp/ssl_certs:z
-      - ./data/ssl_certs/mongodb_rabbitmq_certs/:/data/ssl_certs/mongodb_rabbitmq_certs/
-      - ./data/database-init/load_env.sh:/opt/load_env.sh:z
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
     ports:
       - ${UI_PORT}:3000
     links:
@@ -170,7 +146,6 @@ services:
       resources:
         limits:
           memory: ${UI_RAM_RESOURCES:-256}M
-    entrypoint: ["/bin/bash", "-c", "source /opt/load_env.sh && ./start.sh"]
 volumes:
   nfs_repos:
     driver: local
