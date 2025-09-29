@@ -8,16 +8,16 @@ from pymongo import MongoClient
 from pymongo.errors import OperationFailure, ServerSelectionTimeoutError
 from dotenv import load_dotenv
 
-load_dotenv('.env')
-load_dotenv(f'{os.environ.get("LOCATION")}')
-load_dotenv(f'{os.environ.get("ENV_FILE")}', override=True)
+load_dotenv()
+load_dotenv(os.environ.get("LOCATION"))
+load_dotenv(f'{os.environ.get("HA_NFS_DATA_DIRECTORY")}/config/.env', override=True)
 
 HA_CURRENT_NODE = os.environ["HA_CURRENT_NODE"]
 CE_SETUP_ID = os.environ["CE_SETUP_ID"] 
 CE_HEX_CODE = os.environ["CE_HEX_CODE"]
 CE_IV = os.environ["CE_IV"]
 REPLICA_SET_INITIALIZE_RETRY_COUNT = 3
-ITER_COUNT = 10000
+ITER_COUNT=10000
 
 def change_maintenance_password(raw_text: str, forward=True):
     try:
@@ -161,6 +161,10 @@ def create_replica_set(connection_string):
             db_version = dict(response).get("databaseVersion", "")
             if db_version == os.environ["CURRENT_DATABASE_VERSION"]:
                 print(f"The database version {db_version} is correct.")
+                if isRedHat():
+                    print("Execute this command in remaining nodes to form a cluster:\n  > sudo ./start")
+                else:
+                    print("Execute this command in remaining nodes to form a cluster:\n  > ./start")
                 break
     except OperationFailure as ex:
         raise ex
@@ -218,7 +222,7 @@ def remove_replica_set(connection_string):
     try:
         client = create_client(connection_string)
         cluster_status = client.admin.command({'replSetGetStatus': 1})
-        if len(cluster_status["members"]) == 1 and cluster_status["members"][0]["name"] == f'{HA_CURRENT_NODE}:27017':
+        if len(cluster_status["members"]) == 1:
             print("This is the only node in the cluster. Stopping the services...")
             if HA_CURRENT_NODE != os.environ["HA_PRIMARY_NODE_IP"]:
                 update_connection_info(os.environ['HA_PRIMARY_NODE_IP'], HA_CURRENT_NODE)
@@ -253,7 +257,7 @@ def remove_replica_set(connection_string):
         print("The other MongoDB nodes are not reachable, stopping the services.")
         exit(3)
     except Exception as ex:
-        print("Error occurred while removing node from the cluster.")
+        print("Error occured while removing node from the cluster.")
         print(str(ex))
         raise ex
     finally:
