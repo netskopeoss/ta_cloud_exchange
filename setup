@@ -36,11 +36,14 @@ import string
 from data.management_server.utils import (
     RECOMMENDED_HOST_OS,
     AVAILABLE_INPUTS,
+    RECOMMENDED_HOST_OS_VERSION,
     SUDO_PREFIX,
     GLUSTERFS_BASE_PORT,
     GLUSTERFS_MAX_PORT,
     CLOUD_EXCHANGE_CONFIG,
     CLOUD_EXCHANGE_CONFIG_KEYS,
+    RECOMMENDED_RHEL_VERSION,
+    RECOMMENDED_UBUNTU_VERSION,
     print_fail,
     print_warning,
     print_pass,
@@ -59,6 +62,7 @@ from data.management_server.utils import (
     ServerExceptions,
     configure_logger,
     update_cloudexchange_config,
+    compare_versions
 )
 
 DEFAULT_INPUTS = {
@@ -156,14 +160,14 @@ DEFAULT_INPUTS = {
     "ENV_FILE": {"default": "./.env", "skip": True, "help": ""},
 }
 LATEST_TAG_AND_VERSION = {
-    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core6-6.0.0-beta",
-    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui6-6.0.0-beta",
+    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core6-6.0.0",
+    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui6-6.0.0",
     "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo8-8.0.12",
     "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq4-4.1.3",
     "BETA_OPT_IN": "No",
     "CORE_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:core5-latest",
     "UI_LATEST_VERSION_TAG": "netskopetechnicalalliances/cloudexchange:ui5-latest",
-    "INSTALL_VERSION": "6.0.0-beta.1",
+    "INSTALL_VERSION": "6.0.0",
 }
 CHECKS = {}
 MIN_CPU = 8
@@ -204,10 +208,6 @@ CE_PROFILING = {
 }
 MIN_DISK_BYTES = 0.90 * 80 * 1024**3  # 90% of 80 GB
 MIN_FREE_DISK_BYTES = 20 * 1024**3
-MIN_DOCKER_VERSION = "25.0.3"
-MIN_DOCKER_COMPOSE_VERSION = "2.16.0"
-MIN_PODMAN_VERSION = "3.4.2"
-MIN_PODMAN_COMPOSE_VERSION = "1.0.3"
 MIN_OPENSSL_VERSION = "1.1.1"
 
 N = 5
@@ -215,9 +215,10 @@ VENV_DIR = ".cevenv"
 MIN_PYTHON_MAJOR = 3
 MIN_PYTHON_MINOR = 8
 MIN_HA_SUPPORTED_VERSION = "5.0.0"
-RECOMMENDED_DOCKER_VERSION = "28.3.2"
-RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.39.0"
-RECOMMENDED_PODMAN_VERSION = "4.9.5"
+RECOMMENDED_DOCKER_VERSION = "28.4.0"
+RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.39.4"
+RECOMMENDED_PODMAN_VERSION = "5.4.0"
+MIN_PODMAN_VERSION = "4.9.0"
 RECOMMENDED_PODMAN_COMPOSE_VERSION = "1.5.0"
 
 GIT_PLUGIN_REPO = (
@@ -290,18 +291,6 @@ def print_banner():
     """
     )
 
-
-def compare_versions(version1, version2):
-    versions1 = [int(v) for v in version1.split(".")]
-    versions2 = [int(v) for v in version2.split(".")]
-    for i in range(max(len(versions1), len(versions2))):
-        v1 = versions1[i] if i < len(versions1) else 0
-        v2 = versions2[i] if i < len(versions2) else 0
-        if v1 > v2:
-            return True
-        elif v1 < v2:
-            return False
-    return True
 
 def compare_ce_versions(v1, v2):
     """
@@ -1250,12 +1239,12 @@ def check_docker_versions():
         p = subprocess.check_output(command, shell=True)
         docker_version = re.search(regex, p.decode("utf-8")).groups()[0]
         CONTAINERIZATION_PLATFORM = "Docker " + docker_version
-        if compare_versions(docker_version, MIN_DOCKER_VERSION):
+        if compare_versions(docker_version, RECOMMENDED_DOCKER_VERSION):
             print_pass(f"Docker Version {docker_version}")
             CHECKS["Docker"] = Status.PASS
         else:
             print_fail(
-                f"Docker Version {docker_version} (Minimum {MIN_DOCKER_VERSION} is required)"
+                f"Docker Version {docker_version} (Minimum {RECOMMENDED_DOCKER_VERSION} is required)"
             )
             CHECKS["Docker"] = Status.FAIL
         if docker_version != RECOMMENDED_DOCKER_VERSION:
@@ -1270,13 +1259,13 @@ def check_docker_versions():
         ]
         COMPOSE_VERSION = "docker compose " + docker_compose_version
         if compare_versions(
-            docker_compose_version, MIN_DOCKER_COMPOSE_VERSION
+            docker_compose_version, RECOMMENDED_DOCKER_COMPOSE_VERSION
         ):
             print_pass(f"Docker Compose Version {docker_compose_version}")
             CHECKS["Docker-Compose"] = Status.PASS
         else:
             print_fail(
-                f"Docker Compose Version {docker_compose_version} (Minimum {MIN_DOCKER_COMPOSE_VERSION} is required)"
+                f"Docker Compose Version {docker_compose_version} (Minimum {RECOMMENDED_DOCKER_COMPOSE_VERSION} is required)"
             )
             CHECKS["Docker-Compose"] = Status.FAIL
         if docker_compose_version != RECOMMENDED_DOCKER_COMPOSE_VERSION:
@@ -1330,13 +1319,13 @@ def check_podman_versions():
             raise
         COMPOSE_VERSION = "podman-compose " + podman_compose_version
         if compare_versions(
-            podman_compose_version, MIN_PODMAN_COMPOSE_VERSION
+            podman_compose_version, RECOMMENDED_PODMAN_COMPOSE_VERSION
         ):
             print_pass(f"Podman Compose Version {podman_compose_version}")
             CHECKS["Podman-Compose"] = Status.PASS
         else:
             print_fail(
-                f"Podman Compose Version {podman_compose_version} (Minimum {MIN_PODMAN_COMPOSE_VERSION} is required)"
+                f"Podman Compose Version {podman_compose_version} (Minimum {RECOMMENDED_PODMAN_COMPOSE_VERSION} is required)"
             )
             CHECKS["Podman-Compose"] = Status.FAIL
         if podman_compose_version != RECOMMENDED_PODMAN_COMPOSE_VERSION:
@@ -2757,7 +2746,6 @@ def get_os_name_and_major_version():
         version_id = ""
         os_name = ""
         os_version = ""
-        allow = False
         if os.path.exists("/etc/os-release"):
             with open("/etc/os-release", "r") as f:
                 for line in f:
@@ -2771,7 +2759,6 @@ def get_os_name_and_major_version():
                 if version_id.split(".")[0] in ["20", "22", "24"]:
                     os_version = version_id.split(".")[0]
                 os_name = "Ubuntu"
-                allow = True
             elif "centos" in pretty_name.lower():
                 if version_id.split(".")[0] in ["7", "8"]:
                     os_version = version_id.split(".")[0]
@@ -2780,18 +2767,48 @@ def get_os_name_and_major_version():
                 if version_id.split(".")[0] in ["7", "8", "9"]:
                     os_version = version_id.split(".")[0]
                 os_name = "RHEL"
-                allow = True
         os_name_and_major_version = f"{os_name} {os_version}".strip()
-        if os_name_and_major_version not in RECOMMENDED_HOST_OS and allow:
-            print_warning(
-                f"WARNING: CE is not supported on {pretty_name} version. Please switch to one of the supported version of OS. Supported OS: {RECOMMENDED_HOST_OS}"
+        if os_name_and_major_version not in RECOMMENDED_HOST_OS:
+            print_fail(
+                f"CE is not supported on {pretty_name}. Please switch to one of the supported OS. Recommended OS versions: {RECOMMENDED_HOST_OS_VERSION}."
             )
-        elif os_name_and_major_version not in RECOMMENDED_HOST_OS:
-            print(
-                f"\033[1;31mCE is not supported on {pretty_name}. Please switch to one of the supported OS. Supported OS: {RECOMMENDED_HOST_OS} \033[0;37m"
+            CHECKS["OS"] = Status.FAIL
+        elif "ubuntu" in pretty_name.lower():
+            recommended_version = (
+                RECOMMENDED_UBUNTU_VERSION[0]
+                if version_id.split(".")[0] == "22"
+                else RECOMMENDED_UBUNTU_VERSION[1]
             )
-            if not should_ignore:
-                exit(1)
+            if compare_versions(version_id, recommended_version):
+                print_pass(f"Ubuntu OS Version {version_id}")
+                CHECKS["OS"] = Status.PASS
+            else:
+                print_fail(
+                    f"Ubuntu OS Version {version_id} (Minimum {recommended_version} is required)"
+                )
+                CHECKS["OS"] = Status.FAIL
+            if version_id not in RECOMMENDED_UBUNTU_VERSION:
+                print_warning(
+                    f"The recommended Ubuntu OS versions are {RECOMMENDED_UBUNTU_VERSION[0]} and {RECOMMENDED_UBUNTU_VERSION[1]}"
+                )
+        elif "red hat" in pretty_name.lower():
+            recommended_version = (
+                RECOMMENDED_RHEL_VERSION[0]
+                if version_id.split(".")[0] == "8"
+                else RECOMMENDED_RHEL_VERSION[1]
+            )
+            if compare_versions(version_id, recommended_version):
+                print_pass(f"RHEL OS Version {version_id}")
+                CHECKS["OS"] = Status.PASS
+            else:
+                print_fail(
+                    f"RHEL OS Version {version_id} (Minimum {recommended_version} is required)"
+                )
+                CHECKS["OS"] = Status.FAIL
+            if version_id not in RECOMMENDED_RHEL_VERSION:
+                print_warning(
+                    f"The recommended RHEL OS versions are {RECOMMENDED_RHEL_VERSION[0]} and {RECOMMENDED_RHEL_VERSION[1]}"
+                )
         return os_name_and_major_version
     except Exception:
         pass
