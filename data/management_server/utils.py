@@ -23,7 +23,10 @@ GLUSTERFS_MAX_PORT = 24029
 TOKEN_VALIDITY = 3600
 API_PREFIX = "/api/management"
 SECRET_FILE_NAME = ".env.keys"
-RECOMMENDED_HOST_OS = ["Ubuntu 20", "Ubuntu 22", "Ubuntu 24", "RHEL 8", "RHEL 9"]
+RECOMMENDED_HOST_OS = ["Ubuntu 22", "Ubuntu 24", "RHEL 8", "RHEL 9"]
+RECOMMENDED_HOST_OS_VERSION = ["Ubuntu 22.04", "Ubuntu 24.04", "RHEL 8.8", "RHEL 9.5"]
+RECOMMENDED_UBUNTU_VERSION = ["22.04", "24.04"]
+RECOMMENDED_RHEL_VERSION = ["8.8", "9.5"]
 AVAILABLE_INPUTS = {}
 SUDO_PREFIX = ""
 UPDATES_ALLOWED_ON_ENV = [
@@ -166,6 +169,20 @@ def configure_logger(
     logger.addHandler(file_handler)
 
 
+def compare_versions(version1, version2):
+    """Compare two versions for a package."""
+    versions1 = [int(v) for v in version1.split(".")]
+    versions2 = [int(v) for v in version2.split(".")]
+    for i in range(max(len(versions1), len(versions2))):
+        v1 = versions1[i] if i < len(versions1) else 0
+        v2 = versions2[i] if i < len(versions2) else 0
+        if v1 > v2:
+            return True
+        elif v1 < v2:
+            return False
+    return True
+ 
+
 def get_os_name_and_major_version(handler):
     """
     Get the OS name and its major version.
@@ -184,7 +201,6 @@ def get_os_name_and_major_version(handler):
         version_id = ""
         os_name = ""
         os_version = ""
-        allow = False
         if os.path.exists("/etc/os-release"):
             with open("/etc/os-release", "r") as f:
                 for line in f:
@@ -198,7 +214,6 @@ def get_os_name_and_major_version(handler):
                 if version_id.split(".")[0] in ["20", "22", "24"]:
                     os_version = version_id.split(".")[0]
                 os_name = "Ubuntu"
-                allow = True
             elif "centos" in pretty_name.lower():
                 if version_id.split(".")[0] in ["7", "8"]:
                     os_version = version_id.split(".")[0]
@@ -207,27 +222,56 @@ def get_os_name_and_major_version(handler):
                 if version_id.split(".")[0] in ["7", "8", "9"]:
                     os_version = version_id.split(".")[0]
                 os_name = "RHEL"
-                allow = True
+
         os_name_and_major_version = f"{os_name} {os_version}".strip()
-        if os_name_and_major_version not in RECOMMENDED_HOST_OS and allow:
-            write_chunk(
-                handler.wfile,
-                (
-                    f"WARNING: CE is not supported on {pretty_name}. "
-                    f"Please switch to one of the supported version of OS. "
-                    f"Supported OS: {RECOMMENDED_HOST_OS}"
-                ),
-            )
-        elif os_name_and_major_version not in RECOMMENDED_HOST_OS:
+        if os_name_and_major_version not in RECOMMENDED_HOST_OS:
             write_chunk(
                 handler.wfile,
                 (
                     f"End: CE is not supported on {pretty_name}. "
                     f"Please switch to one of the supported version of OS. "
-                    f"Supported OS: {RECOMMENDED_HOST_OS}"
+                    f"Supported OS: {RECOMMENDED_HOST_OS_VERSION}"
                 ),
             )
             return "", ""
+        elif "ubuntu" in pretty_name.lower():
+            recommended_version = (
+                RECOMMENDED_UBUNTU_VERSION[0]
+                if version_id.split(".")[0] == "22"
+                else RECOMMENDED_UBUNTU_VERSION[1]
+            )
+            if compare_versions(version_id, recommended_version):
+                write_chunk(handler.wfile, f"Info: Ubuntu OS Version {version_id}")
+            else:
+                write_chunk(
+                    handler.wfile,
+                    f"End: Ubuntu OS Version {version_id} (Minimum {recommended_version} is required)"
+                )
+                return "", ""
+            if version_id not in RECOMMENDED_UBUNTU_VERSION:
+                write_chunk(
+                    handler.wfile,
+                    f"Warning: The recommended Ubuntu OS versions are {RECOMMENDED_UBUNTU_VERSION[0]} and {RECOMMENDED_UBUNTU_VERSION[1]}"
+                )
+        elif "red hat" in pretty_name.lower():
+            recommended_version = (
+                RECOMMENDED_RHEL_VERSION[0]
+                if version_id.split(".")[0] == "8"
+                else RECOMMENDED_RHEL_VERSION[1]
+            )
+            if compare_versions(version_id, recommended_version):
+                write_chunk(handler.wfile, f"Info: RHEL OS Version {version_id}")
+            else:
+                write_chunk(
+                    handler.wfile,
+                    f"End: RHEL OS Version {version_id} (Minimum {recommended_version} is required)"
+                )
+                return "", ""
+            if version_id not in RECOMMENDED_RHEL_VERSION:
+                write_chunk(
+                    handler.wfile,
+                    f"Warning: The recommended RHEL OS versions are {RECOMMENDED_RHEL_VERSION[0]} and {RECOMMENDED_RHEL_VERSION[1]}"
+                )
         return os_name, os_version
     except Exception as e:
         write_chunk(
@@ -406,6 +450,13 @@ def install_gluster(
     if should_install_gluster:
         write_chunk(handler.wfile, "Info: Installing GlusterFS.\n")
         os_name, os_version = get_os_name_and_major_version(handler=handler)
+        if not os_name or not os_version:
+            write_chunk(
+                handler.wfile,
+                "End: Unable to check OS version."
+            )
+            end_stream(handler=handler, should_end_stream=should_end_stream)
+            return {"detail": "OS version check failed."}, 400
         if os_name.lower() == "ubuntu":
             response = install_on_ubuntu(handler=handler)
             if response[1] != 200:

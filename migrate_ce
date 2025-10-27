@@ -866,7 +866,7 @@ if __name__ == "__main__":
         f"""
         {Color.GREEN}{Color.BOLD}Welcome! to Cloud Exchange Migration Tool.
 
-        {Color.GREEN}{Color.BOLD}Migrating to v5.1.0 Standalone from v4.2.0 or v5.0.x Standalone (Containerised or CE as a VM).
+        {Color.GREEN}{Color.BOLD}Migrating to latest Standalone from v5.1.x or v5.0.x Standalone (Containerised or CE as a VM).
         """,
         Color.BOLD
     )
