@@ -1,0 +1,17 @@
+[
+    {
+        "id": "BANNER_WARN_1001",
+        "message": "Cloud Exchange **v5.0.1** will reach its End of Life on **January 31, 2026**, please upgrade to CE v6.0.0 and refer to [product life cycle](https://docs.netskope.com/en/about-cloud-exchange#block-a4ca387a-bc38-40ea-b4bc-fcb3d2ff37ba) for more details.",
+        "type": "banner_warn"
+    },
+    {
+        "id": "BANNER_WARN_1002",
+        "message": "Netskope is retiring the **Transaction Event Streaming** solution (based on Google Pub/Sub Lite) by **December 31, 2025**, and transitioning to our next-generation log delivery platform: **Netskope Log Streaming**. This is based on Google's plan to deprecate Pub/Sub Lite. CE (from v5.1.2) supports Log Streaming workflow through the following plugins, [AWS LogStreaming Plugin for Log Shipper](https://docs.netskope.com/en/aws-logstreaming-plugin-for-log-shipper) and [Azure LogStreaming Plugin for Log Shipper](https://docs.netskope.com/en/azure-logstreaming-plugin-for-log-shipper). Please refer to [Netskope Product EOL/EOS Announcements - Netskope Knowledge Portal](https://docs.netskope.com/en/netskope-product-eol-announcements) for more details.",
+        "type": "banner_warn"
+    },
+    {
+        "id": "BANNER_INFO_1001",
+        "message": "Cloud Exchange v6.0.0 is NOW GA, please refer to [community article](https://community.netskope.com/netskope-cloud-exchange-ce-67/netskope-cloud-exchange-ce-v6-0-0-is-now-ga-8268) and [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-6-0-0) for more details.",
+        "type": "banner_info"
+    }
+]
