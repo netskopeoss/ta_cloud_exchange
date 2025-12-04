@@ -1420,6 +1420,7 @@ def handle_connectivity(name, url):
         proxy_support = urllib.request.ProxyHandler(proxies=proxies)
         opener = urllib.request.build_opener(proxy_support)
         urllib.request.install_opener(opener)
+        req.add_header('User-Agent', "netskope-ce-" + LATEST_TAG_AND_VERSION["INSTALL_VERSION"])
 
         res = urllib.request.urlopen(req, timeout=60)
         handle_http_errors(res)
