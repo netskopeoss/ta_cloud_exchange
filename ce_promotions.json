@@ -10,8 +10,9 @@
         "type": "banner_warn"
     },
     {
-        "id": "BANNER_INFO_1002",
-        "message": "We are announcing the general availability of Netskope Cloud Exchange **v6.0.1 patch release** that includes the business-critical security updates described at [Netskope Cloud Exchange Knowledge Portal](https://docs.netskope.com/en/risk-assessment-remediation-and-mitigation-plan-for-netskope-cloud-exchange-deployments). We strongly recommend that customers **deploy, upgrade, or migrate to CE v6.0.1** to take advantage of the latest critical bug fixes and security updates, helping to strengthen the security posture of their digital ecosystem. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-6-0-1), [upgrade](https://docs.netskope.com/en/upgrade-cloud-exchange) and [migration](https://docs.netskope.com/en/migrate-cloud-exchange) documentation for more details.",
-        "type": "banner_info"
+        "id": "BANNER_INFO_1003",
+        "message": "Cloud Exchange v6.1.0 is NOW GA, please refer to [community article](https://community.netskope.com/netskope-cloud-exchange-ce-67/ce-v6-1-0-ga-ce-plugins-8677) for details. We strongly recommend that customers **deploy, upgrade, or migrate to CE v6.1.0** to take advantage of the latest critical bug fixes and security updates, helping to strengthen the security posture of their digital ecosystem. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-6-1-0), [upgrade](https://docs.netskope.com/en/upgrade-cloud-exchange) and [migration](https://docs.netskope.com/en/migrate-cloud-exchange) documentation for more details.",
+        "type": "banner_info",
+        "ce_versions": "<6.1.0"
     }
 ]
