@@ -14,5 +14,16 @@
         "message": "Cloud Exchange v6.1.0 is NOW GA, please refer to [community article](https://community.netskope.com/netskope-cloud-exchange-ce-67/ce-v6-1-0-ga-ce-plugins-8677) for details. We strongly recommend that customers **deploy, upgrade, or migrate to CE v6.1.0** to take advantage of the latest critical bug fixes and security updates, helping to strengthen the security posture of their digital ecosystem. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-6-1-0), [upgrade](https://docs.netskope.com/en/upgrade-cloud-exchange) and [migration](https://docs.netskope.com/en/migrate-cloud-exchange) documentation for more details.",
         "type": "banner_info",
         "ce_versions": "<6.1.0"
+    },
+    {
+        "id": "BANNER_WARN_1003",
+        "message": "Cloud Exchange versions - **v5.1.0**, **v5.1.1**, and **v5.1.2** will reach its End of Life on **October 31, 2026**, please upgrade to latest versions and refer to [product life cycle](https://docs.netskope.com/en/about-cloud-exchange#block-a4ca387a-bc38-40ea-b4bc-fcb3d2ff37ba) for more details.",
+        "type": "banner_warn",
+        "ce_version": "<6.0.0"
+    },
+    {
+        "id": "BANNER_WARN_1004",
+        "message": "Support for the **CLS Azure Sentinel** plugin will reach End of Life on **September 14, 2026**, due to the deprecation of the [Microsoft Data Collector API](https://learn.microsoft.com/en-us/previous-versions/azure/azure-monitor/logs/data-collector-api?tabs=powershell). Customers are advised to migrate to the CLS [Microsoft Azure Log Analytics](https://docs.netskope.com/en/microsoft-azure-log-analytics-plugin-for-log-shipper) plugin as a replacement. For more guidance, please refer to this [KB article](https://docs.netskope.com/en/cloud-exchange-kb-articles#microsoft-azure-sentinel-plugin-for-log-shipper-module-deprecation).",
+        "type": "banner_warn"
     }
 ]
