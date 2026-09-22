@@ -458,6 +458,9 @@ out_platform_details() {
 
     echo -e "\n------- CFC Module End ---------" >>$OUT
 
+    echo -e "\n------- AI Analytics -------" >>$OUT
+    $podman_compose exec core bash -c "source /opt/load_env.sh && export PYTHONPATH=/opt/ &&  python netskope/common/utils/collect_diagnose.py ai_analytics" >>$OUT
+
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
     out_plugin_version "$CONFIGURATIONS" "$podman_compose"
     out_plugin_version "$CLS_CONFIGURATIONS" "$podman_compose"
@@ -606,6 +609,9 @@ out_platform_details() {
     $docker_compose exec mongodb-primary mongosh --quiet --username cteadmin --password $MAINTENANCE_PASSWORD cte --eval "db.getMongo().setReadPref('secondary'); JSON.stringify(db.$CFC_STATISTICS.find({}, {sentImages: 1, _id:0}).toArray(), null, 2)" | sed -e '/\"t\"/d' | sed -r 's/\x1B\[(([0-9]{1,2})?(;)?([0-9]{1,2})?)?[m,K,H,f,J]//g' | sed -e "s/$DISCARD_MONGO_STRING_REGX//g" -e 's/\"transformData\"/\"MappingTransformation\"/g' >>$OUT
 
     echo -e "\n------- CFC Module End ---------" >>$OUT
+
+    echo -e "\n------- AI Analytics -------" >>$OUT
+    $docker_compose exec core bash -c "source /opt/load_env.sh && export PYTHONPATH=/opt/ &&  python netskope/common/utils/collect_diagnose.py ai_analytics" >>$OUT
 
     echo -e "\n------- Configured Plugin Version --------\n" >>$OUT
     out_plugin_version "$CONFIGURATIONS" "$docker_compose"

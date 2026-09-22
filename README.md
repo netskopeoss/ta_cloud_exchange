@@ -18,8 +18,8 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
     c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br>
     Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
 2. Checkout the Desired Version.
-  Before proceeding, checkout the desired version of the repository. For example, to checkout version 6.1.0:<br>
-    a. `git checkout v6.1.0`<br>
+  Before proceeding, checkout the desired version of the repository. For example, to checkout version 7.0.0-beta:<br>
+    a. `git checkout v7.0.0-beta`<br>
 3.  Execute the setup script:<br>
     a. `sudo ./setup`<br>
 4.  Launch Cloud Exchange<br>
@@ -30,7 +30,7 @@ Note: If you want to add your SSL certificate, you can add them to the `ta_cloud
 
 ## Install Procedure for CE as a VM deployment
 
-- Download the latest version of OVA from this [link](https://cloud-exchange-store.s3.us-east-1.amazonaws.com/cloudexchange/ova/cloud-exchange-6.1.0-20260427.ova).
+- Download the latest version of OVA from this [link](https://cloud-exchange-store.s3.us-east-1.amazonaws.com/cloudexchange/ova/cloud-exchange-7.0.0-beta-20260922.ova).
 
 ## Upgrade Cloud Exchange
 

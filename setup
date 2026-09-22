@@ -160,12 +160,12 @@ DEFAULT_INPUTS = {
     "ENV_FILE": {"default": "./.env", "skip": True, "help": ""},
 }
 LATEST_TAG_AND_VERSION = {
-    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core6-6.1.0",
-    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui6-6.1.0",
-    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo6-6.1.0-8.0.18",
-    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq6-6.1.0-4.2.2",
+    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core7-7.0.0-beta",
+    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui7-7.0.0-beta",
+    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo7-7.0.0-beta-8.3.4",
+    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq7-7.0.0-beta-4.3.2",
     "BETA_OPT_IN": "No",
-    "INSTALL_VERSION": "6.1.0",
+    "INSTALL_VERSION": "7.0.0-beta.1",
 }
 CHECKS = {}
 MIN_CPU = 8
@@ -211,13 +211,30 @@ MIN_OPENSSL_VERSION = "1.1.1"
 N = 5
 VENV_DIR = ".cevenv"
 MIN_PYTHON_MAJOR = 3
-MIN_PYTHON_MINOR = 11
+MIN_PYTHON_MINOR = 12
 MIN_HA_SUPPORTED_VERSION = "5.0.0"
 RECOMMENDED_DOCKER_VERSION = "28.4.0"
 RECOMMENDED_DOCKER_COMPOSE_VERSION = "2.39.4"
 RECOMMENDED_PODMAN_VERSION = "5.4.0"
 MIN_PODMAN_VERSION = "4.9.0"
 RECOMMENDED_PODMAN_COMPOSE_VERSION = "1.5.0"
+
+# Outbound endpoints that must be reachable before the setup can proceed.
+# The Docker registry endpoints answer with a 401 and a WWW-Authenticate header
+# when no bearer token is supplied, which is a valid response and confirms the
+# endpoint is reachable.
+# On CE as VM the container images ship with the appliance, so the registries do
+# not have to be reachable. Endpoints that are still used after installation,
+# such as the plugin repository hosted on GitHub, are verified in both
+# deployment types.
+CONNECTIVITY_CHECKS = [
+    # (check name, URL, additional acceptable status codes, applies to CE as VM)
+    ("GitHub", "https://github.com", [], True),
+    ("Docker Hub", "https://hub.docker.com", [], False),
+    ("Docker Auth", "https://auth.docker.io/token", [401], False),
+    ("Docker Registry", "https://registry-1.docker.io/v2/", [401], False),
+    ("Docker Index", "https://index.docker.io/v2/", [401], False),
+]
 
 GIT_PLUGIN_REPO = (
     "https://github.com/netskopeoss/ta_cloud_exchange_plugins.git"
@@ -226,7 +243,7 @@ GIT_PLUGIN_REPO = (
 MONGO_USER_ID = 1001
 OLD_MONGO_USER_ID = 999
 MONGO_MIGRATION_TIMEOUT = 60
-MONGO_LATEST_VERSION = "8.0"
+MONGO_LATEST_VERSION = "8.3"
 CLOUD_EXCHANGE_LINUX_SERVICE_NAME = "cloud-exchange"
 
 is_ui_running = False
@@ -529,6 +546,7 @@ def create_mongo_container(
                         -e MONGODB_PASSWORD={maintenance_password} \
                         -e HTTP_PROXY=${http_proxy} \
                         -e HTTPS_PROXY=${https_proxy} \
+                        -e GLIBC_TUNABLES=glibc.pthread.rseq=1 \
                         -v ./data/mongo-data/data/db:/data/db:z \
                         --name {temp_container_name} \
                         index.docker.io/{image_name} >/dev/null 2>&1"
@@ -568,6 +586,7 @@ def run_temp_mongo_container_for_migration(
     MONGO_MIGRATE_IMAGE = "mongo:5.0.21"
     MONGO_TEMP_IMAGE_ONE = "mongo:6.0.12"
     MONGO_TEMP_IMAGE_TWO = "mongo:7.0.16"
+    MONGO_TEMP_IMAGE_THREE = "mongo:8.0.18"
     MONGO_CURRENT_IMAGE = LATEST_TAG_AND_VERSION["MONGO_TAG"]
     temp_mongo_container_name = "mongo-migration"
 
@@ -657,31 +676,58 @@ def run_temp_mongo_container_for_migration(
         )
     except Exception:
         # remove above container
+        pass
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    remove_mongo_container(deployment, temp_mongo_container_name)
+    # update ownership since with CE v5.1.2 mongo custom image has 1001 id
+    if platform.system().lower() not in ["darwin"]:
+        command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
+        set_directory_permission("data/mongo-data", command)
+    # spin mongo 8.0 to bump FCV to 8.0 before starting the target image
+    create_mongo_container(
+        deployment,
+        maintenance_password,
+        http_proxy,
+        https_proxy,
+        temp_mongo_container_name,
+        MONGO_TEMP_IMAGE_THREE,
+    )
+    try:
         time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
-        remove_mongo_container(deployment, temp_mongo_container_name)
-        # update ownership since with CE v5.1.2 mongo custom image has 1001 id
-        if platform.system().lower() not in ["darwin"]:
-            command = f"{SUDO_PREFIX} chown -R {MONGO_USER_ID}:{MONGO_USER_ID} data/mongo-data"
-            set_directory_permission("data/mongo-data", command)
-        # spin latest mongo version to check compatibility
-        create_mongo_container(
-            deployment,
-            maintenance_password,
-            http_proxy,
-            https_proxy,
-            temp_mongo_container_name,
-            MONGO_CURRENT_IMAGE,
+        eval_command = (
+            """'db.adminCommand({setFeatureCompatibilityVersion: "8.0", confirm: true})'"""
         )
-
-        time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
-        eval_command = """'db.adminCommand({getParameter: 1, featureCompatibilityVersion: 1})'"""
         execute_mongodb_command(
             deployment,
             temp_mongo_container_name,
             "mongosh",
             maintenance_password,
             eval_command,
+            stderr=subprocess.PIPE,
         )
+    except Exception:
+        # remove above container
+        pass
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    remove_mongo_container(deployment, temp_mongo_container_name)
+    # spin latest mongo version to check compatibility
+    create_mongo_container(
+        deployment,
+        maintenance_password,
+        http_proxy,
+        https_proxy,
+        temp_mongo_container_name,
+        MONGO_CURRENT_IMAGE,
+    )
+    time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
+    eval_command = """'db.adminCommand({getParameter: 1, featureCompatibilityVersion: 1})'"""
+    execute_mongodb_command(
+        deployment,
+        temp_mongo_container_name,
+        "mongosh",
+        maintenance_password,
+        eval_command,
+    )
 
     time.sleep(MONGO_MIGRATION_TIMEOUT // 2)
     remove_mongo_container(deployment, temp_mongo_container_name)
@@ -1037,8 +1083,11 @@ def print_sizing_table(actual):
 
     # Print the data rows
     for i in range(len(metrics)):
+        # A metric that could not be determined is reported as such rather than
+        # as a bare "None".
+        current = "Unknown" if actual[i] is None else str(actual[i])
         print(
-            f"| {metrics[i]:<15} | {str(actual[i]):<13} | {str(MEDIUM_PROFILE_REQUIREMENTS[i]):<15} | {str(LARGE_PROFILE_REQUIREMENTS[i]):<15} |"
+            f"| {metrics[i]:<15} | {current:<13} | {str(MEDIUM_PROFILE_REQUIREMENTS[i]):<15} | {str(LARGE_PROFILE_REQUIREMENTS[i]):<15} |"
         )
         print(
             "+-----------------+---------------+-----------------+-----------------+"
@@ -1064,8 +1113,11 @@ def check_machine_specs():
     except Exception:
         print_warning("Could not verify CPU information of the machine...")
         CHECKS["CPU AVX Support"] = Status.NOT_VERIFIED
+    # Initialized before the try block so that the checks below still have a
+    # value to read when multiprocessing.cpu_count() raises.
+    cpu_cores = None
+    profile_name = None
     try:
-        profile_name = None
         cpu_cores = multiprocessing.cpu_count()
         if cpu_cores not in CE_PROFILING:
             CHECKS["CPU Check"] = Status.FAIL
@@ -1102,6 +1154,10 @@ def check_machine_specs():
         CHECKS["Memory Check"] = Status.NOT_VERIFIED
 
     # Check Disk Space
+    # Initialized before the try block so that the sizing table still has a
+    # value to read when the disk usage could not be determined.
+    free_space = None
+    total_space = None
     try:
         # Get the path of the current file
         current_file_path = __file__
@@ -1145,7 +1201,9 @@ def check_machine_specs():
         ]
     )
     sizing_result = None
-    if not profile_name and cpu_cores < MEDIUM_PROFILE_REQUIREMENTS[0]:
+    if not profile_name and (
+        cpu_cores is None or cpu_cores < MEDIUM_PROFILE_REQUIREMENTS[0]
+    ):
         profile_name = CE_PROFILING[MEDIUM_PROFILE_REQUIREMENTS[0]]["name"]
     elif not profile_name:
         profile_name = CE_PROFILING[LARGE_PROFILE_REQUIREMENTS[0]]["name"]
@@ -1163,8 +1221,8 @@ def check_machine_specs():
         machine_specs = [
             cpu_cores,
             total_memory,
-            round(total_space / 1024**3, 1),
-            round(free_space / 1024**3, 1),
+            round(total_space / 1024**3, 1) if total_space is not None else None,
+            round(free_space / 1024**3, 1) if free_space is not None else None,
         ]
         print_sizing_table(machine_specs)
 
@@ -1381,7 +1439,25 @@ def handle_http_errors(res):
         raise ServerExceptions("Gateway Timeout Error.")
 
 
-def handle_connectivity(name, url):
+def handle_connectivity(name, url, acceptable_status_codes=None):
+    """Verify the given URL is reachable.
+
+    Args:
+        name (str): Key under which the result is stored in CHECKS.
+        url (str): URL to reach out to.
+        acceptable_status_codes (list): Status codes, other than 200, that
+            still prove the endpoint is reachable. The Docker registry
+            endpoints, for instance, answer with a 401 when no bearer token
+            is supplied.
+
+    Returns:
+        Status.PASS when the endpoint is reachable, raises otherwise.
+
+    Note:
+        This is executed in a worker process by `timeout()`, hence the status
+        is returned to the caller instead of being read back from CHECKS.
+    """
+    acceptable_status_codes = acceptable_status_codes or []
     try:
         req = urllib.request.Request(url)
         proxy = None
@@ -1399,9 +1475,21 @@ def handle_connectivity(name, url):
         req.add_header('User-Agent', "netskope-ce-" + LATEST_TAG_AND_VERSION["INSTALL_VERSION"])
 
         res = urllib.request.urlopen(req, timeout=60)
-        handle_http_errors(res)
+        if res.code not in acceptable_status_codes:
+            handle_http_errors(res)
         CHECKS[name] = Status.PASS
         print_pass(f"Connectivity to {url} verified successfully.")
+        return Status.PASS
+    except urllib.error.HTTPError as e:
+        if e.code in acceptable_status_codes:
+            CHECKS[name] = Status.PASS
+            print_pass(f"Connectivity to {url} verified successfully.")
+            return Status.PASS
+        print_fail(
+            f"Error occurred while verifying connectivity to {url}: HTTPError {e}"
+        )
+        CHECKS[name] = Status.FAIL
+        raise
     except ClientExceptions as e:
         print_fail(
             f"Error occurred while verifying connectivity to {url}: ClientError {e}"
@@ -1411,12 +1499,6 @@ def handle_connectivity(name, url):
     except ServerExceptions as e:
         print_fail(
             f"Error occurred while verifying connectivity to {url}: ServerError {e}"
-        )
-        CHECKS[name] = Status.FAIL
-        raise
-    except urllib.error.HTTPError as e:
-        print_fail(
-            f"Error occurred while verifying connectivity to {url}: HTTPError {e}"
         )
         CHECKS[name] = Status.FAIL
         raise
@@ -1432,46 +1514,69 @@ def handle_connectivity(name, url):
         )
         CHECKS[name] = Status.FAIL
         raise
+    finally:
+        # Flush explicitly, the worker process is torn down as soon as the
+        # call completes and buffered output would otherwise be lost when the
+        # output of the setup is redirected to a file.
+        sys.stdout.flush()
 
 
 def timeout(t, cmd, *args):
-    if len(args) != 2:
+    # args[0] is the check name and args[1] the URL, both are required to
+    # report the outcome when the call does not complete in time.
+    if len(args) < 2:
         return
     pool = multiprocessing.Pool(processes=1)
-    result = pool.apply_async(cmd, args=args)
     try:
-        retval = result.get(timeout=t)
-    except multiprocessing.TimeoutError as err:
+        result = pool.apply_async(cmd, args=args)
+        try:
+            retval = result.get(timeout=t)
+        except multiprocessing.TimeoutError as err:
+            CHECKS[args[0]] = Status.FAIL
+            url = args[1]
+            print_fail(
+                f"Error occurred while verifying connectivity to {url}: Timed out."
+            )
+        except Exception as err:
+            CHECKS[args[0]] = Status.FAIL
+        else:
+            # `cmd` ran in a worker process, so the CHECKS entry it set is not
+            # visible here. Record the status it returned instead.
+            if retval is not None:
+                CHECKS[args[0]] = retval
+            return retval
+    finally:
         pool.terminate()
         pool.join()
-        CHECKS[args[0]] = Status.FAIL
-        url = args[1]
-        print_fail(
-            f"Error occurred while verifying connectivity to {url}: Timed out."
-        )
-    except Exception as err:
-        CHECKS[args[0]] = Status.FAIL
-    else:
-        return retval
 
 
 def check_connectivity():
-    # Check connectivity for docker
+    # On CE as VM the entire application is bundled as an image, so the
+    # container registries do not have to be reachable. Only the endpoints that
+    # are marked as applicable to CE as VM are verified there.
+    is_ce_as_vm = ce_as_vm_check()
+    connectivity_checks = [
+        (name, url, acceptable_status_codes)
+        for name, url, acceptable_status_codes, applies_to_ce_as_vm in (
+            CONNECTIVITY_CHECKS
+        )
+        if applies_to_ce_as_vm or not is_ce_as_vm
+    ]
+
     print(
         "\nVerifying the connectivity for pre-requisite outbound network calls..."
     )
 
-    if not ce_as_vm_check():
-        timeout(
-            60, handle_connectivity, "Docker Hub", "https://hub.docker.com"
-        )
+    for name, url, acceptable_status_codes in connectivity_checks:
+        timeout(60, handle_connectivity, name, url, acceptable_status_codes)
 
+    if not is_ce_as_vm:
         print(
-            "\033[1;37mNOTE: This connectivity check is only for the Docker Hub (https://hub.docker.com). Docker images are pulled from CDN. Please make sure that you have the required connectivity to pull the docker images.\033[0;37m"
+            "\033[1;37mNOTE: Docker images are pulled from CDN. Please make sure that you have the required connectivity to pull the docker images.\033[0;37m"
         )
 
     if Status.FAIL in [
-        CHECKS.get("Docker Hub"),
+        CHECKS.get(name) for name, _, _ in connectivity_checks
     ]:
         print(
             "\033[1;31mOne or more connectivity checks have failed. Verify the network connectivity, proxy settings or firewall configurations to address the connectivity issues. \033[0;37m"
@@ -1494,6 +1599,51 @@ def cpu_supports_avx():
     with open("/proc/cpuinfo", "r") as f:
         cpuinfo = f.read()
     return "avx" in cpuinfo
+
+
+def check_container_runtime_access():
+    """Verify the current user is able to run container runtime commands.
+
+    Being able to read the runtime version is not enough, the user also needs
+    permission to talk to the daemon, which on Ubuntu means being a member of
+    the `docker` group.
+    """
+    print("\nVerifying container runtime access...")
+    if not CONTAINERIZATION_PLATFORM:
+        print_warning(
+            "Could not verify container runtime access, "
+            "no container runtime was detected on the machine."
+        )
+        CHECKS["Container Runtime Access"] = Status.NOT_VERIFIED
+        return
+
+    runtime = CONTAINERIZATION_PLATFORM.split()[0].lower()
+    try:
+        process = subprocess.run(
+            [runtime, "ps"], capture_output=True, text=True, check=False
+        )
+        if process.returncode == 0:
+            print_pass(
+                f"Verified {runtime} command access for the current user."
+            )
+            CHECKS["Container Runtime Access"] = Status.PASS
+        else:
+            print_fail(
+                f"The current user is not able to run {runtime} commands. "
+                f"(Error: {process.stderr.strip()})"
+            )
+            if runtime == "docker":
+                print_fail(
+                    "Add the current user to the 'docker' group "
+                    "(`sudo usermod -aG docker $USER`), re-login "
+                    "and re-run the script."
+                )
+            CHECKS["Container Runtime Access"] = Status.FAIL
+    except Exception as e:
+        print_warning(
+            f"Could not verify {runtime} command access of the current user: {e}"
+        )
+        CHECKS["Container Runtime Access"] = Status.NOT_VERIFIED
 
 
 def check_prerequisites():
@@ -1527,6 +1677,7 @@ def check_prerequisites():
                 print_fail(
                     f"Could not verify Podman/Podman-compose/Podman-plugins version of the machine"
                 )
+    check_container_runtime_access()
     print("\nVerifying OpenSSL prerequisites...")
     try:
         process = subprocess.Popen(['openssl', 'version'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -1752,6 +1903,12 @@ def check_and_apply_file_permissions():
             )
             CHECKS["RABBITMQ"] = Status.FAIL
         else:
+            # RabbitMQ 4.3+ uses Khepri exclusively; the legacy Mnesia data
+            # directory is never read and can be removed on setup.
+            mnesia_dir = "data/rabbitmq/data/mnesia"
+            if os.path.exists(mnesia_dir):
+                shutil.rmtree(mnesia_dir)
+                print_pass("Removed legacy Mnesia data directory (data/rabbitmq/data/mnesia) — not used by RabbitMQ 4.3+")
             if platform.system().lower() not in ["darwin"]:
                 command = f"{SUDO_PREFIX} chown -R 1001:1001 data/rabbitmq"
                 set_directory_permission("data/rabbitmq", command)
@@ -2745,11 +2902,7 @@ def get_os_name_and_major_version():
             )
             CHECKS["OS"] = Status.FAIL
         elif "ubuntu" in pretty_name.lower():
-            recommended_version = (
-                RECOMMENDED_UBUNTU_VERSION[0]
-                if version_id.split(".")[0] == "22"
-                else RECOMMENDED_UBUNTU_VERSION[1]
-            )
+            recommended_version = RECOMMENDED_UBUNTU_VERSION[-1]
             if compare_versions(version_id, recommended_version):
                 print_pass(f"Ubuntu OS Version {version_id}")
                 CHECKS["OS"] = Status.PASS
@@ -2760,7 +2913,7 @@ def get_os_name_and_major_version():
                 CHECKS["OS"] = Status.FAIL
             if version_id not in RECOMMENDED_UBUNTU_VERSION:
                 print_warning(
-                    f"The recommended Ubuntu OS versions are {RECOMMENDED_UBUNTU_VERSION[0]} and {RECOMMENDED_UBUNTU_VERSION[1]}"
+                    f"The recommended Ubuntu OS version is {RECOMMENDED_UBUNTU_VERSION[-1]}."
                 )
         elif "red hat" in pretty_name.lower():
             recommended_version = RECOMMENDED_RHEL_VERSION[0]
@@ -3369,22 +3522,83 @@ def check_venv_available():
     return True
 
 
+def get_interpreter_version_info(interpreter):
+    """Return the (major, minor, micro) version of the given interpreter.
+
+    The interpreter is executed to obtain this rather than inferred from its
+    path: a virtual environment's bin/python is a symlink onto the interpreter
+    it was built with, so neither the path nor the symlink target reliably
+    identifies the version. Returns None when it cannot be determined.
+    """
+    if not interpreter or not os.path.exists(interpreter):
+        return None
+    try:
+        result = subprocess.run(
+            [
+                interpreter,
+                "-c",
+                "import sys; print('%d %d %d' % sys.version_info[:3])",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        return tuple(int(part) for part in result.stdout.split())
+    except ValueError:
+        return None
+
+
 def setup_virtual_environment():
     venv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), VENV_DIR)
     should_install_venv = True
     if os.path.exists(venv_path) and os.path.isdir(venv_path):
         print(f"Virtual environment '{VENV_DIR}' already exists.")
-        print("Using existing virtual environment.")
         activate_script_path = os.path.join(venv_path, "bin", "activate")
         python_script_path = os.path.join(venv_path, "bin", "python")
         if not os.path.exists(activate_script_path) or not os.path.exists(python_script_path):
             print_fail(f"Could not found activate or python script in '{VENV_DIR}/bin'")
             should_install_venv = True
         else:
-            should_install_venv = False
+            # A virtual environment permanently keeps the interpreter it was
+            # built with, so an existing one is only reused when that
+            # interpreter still meets the minimum. The management server runs
+            # exclusively on this interpreter, and so does every script it
+            # spawns, so reusing an outdated environment would silently put the
+            # whole management service on an unsupported Python.
+            venv_version_info = get_interpreter_version_info(python_script_path)
+            if venv_version_info is None:
+                print_warning(
+                    f"Could not determine the Python version of the existing "
+                    f"'{VENV_DIR}' virtual environment. Recreating it."
+                )
+                should_install_venv = True
+            elif venv_version_info < (MIN_PYTHON_MAJOR, MIN_PYTHON_MINOR):
+                venv_version = ".".join(str(part) for part in venv_version_info)
+                print_warning(
+                    f"The existing '{VENV_DIR}' virtual environment runs "
+                    f"Python {venv_version}, below the required "
+                    f"{MIN_PYTHON_MAJOR}.{MIN_PYTHON_MINOR}. Recreating it "
+                    f"with the current interpreter ({sys.executable})."
+                )
+                should_install_venv = True
+            else:
+                venv_version = ".".join(str(part) for part in venv_version_info)
+                print_pass(
+                    f"Using existing virtual environment (Python {venv_version})."
+                )
+                should_install_venv = False
 
     if should_install_venv:
-        print(f"Creating new virtual environment '{VENV_DIR}'...")
+        print(
+            f"Creating new virtual environment '{VENV_DIR}' using "
+            f"{sys.executable}..."
+        )
         try:
             subprocess.run([sys.executable, "-m", "venv", "--clear", VENV_DIR], check=True)
             print_pass("Virtual environment created successfully")

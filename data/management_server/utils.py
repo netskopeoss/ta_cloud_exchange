@@ -9,6 +9,7 @@ import ssl
 from pathlib import Path, PurePath
 import re
 import shutil
+import select
 import subprocess
 import sys
 from secrets import token_bytes
@@ -24,9 +25,9 @@ GLUSTERFS_MAX_PORT = 24029
 TOKEN_VALIDITY = 3600
 API_PREFIX = "/api/management"
 SECRET_FILE_NAME = ".env.keys"
-RECOMMENDED_HOST_OS = ["Ubuntu 22", "Ubuntu 24", "RHEL 9"]
-RECOMMENDED_HOST_OS_VERSION = ["Ubuntu 22.04", "Ubuntu 24.04", "RHEL 9.5"]
-RECOMMENDED_UBUNTU_VERSION = ["22.04", "24.04"]
+RECOMMENDED_HOST_OS = ["Ubuntu 24", "RHEL 9"]
+RECOMMENDED_HOST_OS_VERSION = ["Ubuntu 24.04", "RHEL 9.5"]
+RECOMMENDED_UBUNTU_VERSION = ["24.04"]
 RECOMMENDED_RHEL_VERSION = ["9.5"]
 AVAILABLE_INPUTS = {}
 SUDO_PREFIX = ""
@@ -240,11 +241,7 @@ def get_os_name_and_major_version(handler):
             )
             return "", ""
         elif "ubuntu" in pretty_name.lower():
-            recommended_version = (
-                RECOMMENDED_UBUNTU_VERSION[0]
-                if version_id.split(".")[0] == "22"
-                else RECOMMENDED_UBUNTU_VERSION[1]
-            )
+            recommended_version = RECOMMENDED_UBUNTU_VERSION[-1]
             if compare_versions(version_id, recommended_version):
                 write_chunk(handler.wfile, f"Info: Ubuntu OS Version {version_id}")
             else:
@@ -256,7 +253,7 @@ def get_os_name_and_major_version(handler):
             if version_id not in RECOMMENDED_UBUNTU_VERSION:
                 write_chunk(
                     handler.wfile,
-                    f"Warning: The recommended Ubuntu OS versions are {RECOMMENDED_UBUNTU_VERSION[0]} and {RECOMMENDED_UBUNTU_VERSION[1]}"
+                    f"Warning: The recommended Ubuntu OS version is {RECOMMENDED_UBUNTU_VERSION[-1]}."
                 )
         elif "red hat" in pretty_name.lower():
             recommended_version = RECOMMENDED_RHEL_VERSION[0]
@@ -285,6 +282,17 @@ def get_os_name_and_major_version(handler):
         return "", ""
 
 
+def _normalize_newlines(data):
+    r"""Fold \r\n and bare \r into \n, the way universal_newlines used to.
+
+    Callers stream this output to the UI live (node onboarding, GlusterFS
+    install). apt-get progress and the diagnose spinner delimit their updates
+    with \r, so without this they would buffer up until the next \n instead of
+    appearing a line at a time.
+    """
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 def execute_command(command, env=None, shell=False, input_data=None):
     """
     Execute a command and yield its output.
@@ -293,7 +301,7 @@ def execute_command(command, env=None, shell=False, input_data=None):
         command (list): The command to execute with its arguments.
         env (dict): The environment variables to set.
         shell (bool): Whether to use the shell or not.
-        input_data (str): The input data to provide to the command.
+        input_data (str | bytes): The input data to provide to the command.
 
     Yields:
         dict: The messages from the command execution. The keys are:
@@ -312,23 +320,47 @@ def execute_command(command, env=None, shell=False, input_data=None):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         stdin=subprocess.PIPE if input_data else None,
-        text=True,
-        bufsize=1,
         env=env,
-        universal_newlines=True,  # Ensures proper line handling
         shell=shell,
     )
 
     try:
         if input_data:
-            process.stdin.write(input_data)
+            data = input_data.encode() if isinstance(input_data, str) else input_data
+            process.stdin.write(data)
             process.stdin.close()
 
-        for output in iter(process.stdout.readline, ""):  # Read stdout line by line
-            yield {"type": "stdout", "message": output}
+        # os.read() never blocks beyond what select() already promised, unlike readline().
+        buffers = {
+            process.stdout.fileno(): ["stdout", b""],
+            process.stderr.fileno(): ["stderr", b""],
+        }
 
-        for error in iter(process.stderr.readline, ""):  # Read stderr line by line
-            yield {"type": "stderr", "message": error}
+        while buffers:
+            readable, _, _ = select.select(list(buffers.keys()), [], [], 0.1)
+
+            for fd in readable:
+                stream_type, pending = buffers[fd]
+                chunk = os.read(fd, 65536)
+
+                if not chunk:
+                    if pending:
+                        pending = _normalize_newlines(pending)
+                        yield {"type": stream_type, "message": pending.decode(errors="replace")}
+                    del buffers[fd]
+                    continue
+
+                pending += chunk
+                # Hold back a trailing \r: the next chunk may open with \n and
+                # complete a \r\n pair we must not split twice.
+                held = b""
+                if pending.endswith(b"\r"):
+                    pending, held = pending[:-1], b"\r"
+
+                *lines, remainder = _normalize_newlines(pending).split(b"\n")
+                buffers[fd][1] = remainder + held
+                for line in lines:
+                    yield {"type": stream_type, "message": (line + b"\n").decode(errors="replace")}
     finally:
         process.wait()  # Ensure the process completes
         yield {"type": "returncode", "code": process.returncode}
@@ -603,6 +635,57 @@ def update_glusterd_ports(file_path, listen_port, base_port, max_port):
     return True
 
 
+def _is_apt_universe_enabled():
+    """
+    Return True if the apt universe component is present in configured apt sources.
+
+    Supports classic one-line sources and Ubuntu deb822 .sources files.
+    """
+    check_cmd = (
+        f"{SUDO_PREFIX} bash -c 'grep -rhE \"(^|[[:space:]])universe([[:space:]]|$)\" "
+        "/etc/apt/sources.list /etc/apt/sources.list.d/ 2>/dev/null "
+        "| grep -vE \"^[[:space:]]*#\" | grep -q .'"
+    ).strip()
+    return_code = -1
+    for result in execute_command(check_cmd, shell=True):
+        if result.get("type") == "returncode":
+            return_code = result.get("code", -1)
+    return return_code == 0
+
+
+def _cleanup_legacy_glusterfs_ppa(handler):
+    """Remove legacy GlusterFS PPA artifacts left behind by older installs."""
+    cleanup_targets = [
+        "/etc/apt/sources.list.d/glusterfs-ppa.list",
+        "/etc/apt/trusted.gpg.d/gluster.gpg",
+    ]
+    cleanup_commands = [
+        f"{SUDO_PREFIX} rm -f {cleanup_target}"
+        for cleanup_target in cleanup_targets
+        if os.path.exists(cleanup_target)
+    ]
+
+    if not cleanup_commands:
+        write_chunk(
+            handler.wfile, "Info: Legacy GlusterFS PPA configuration not present.\n"
+        )
+        return None
+
+    write_chunk(handler.wfile, "Info: Removing legacy GlusterFS PPA configuration.\n")
+    for command in cleanup_commands:
+        response = execute_command_with_logging(
+            command,
+            handler,
+            shell=True,
+            message="removing legacy GlusterFS PPA configuration",
+        )
+        if response[1] != 200:
+            return response
+
+    write_chunk(handler.wfile, "Info: Legacy GlusterFS PPA configuration removed.\n")
+    return None
+
+
 def install_on_ubuntu(handler):
     """
     Install glusterfs on Ubuntu/Debian.
@@ -614,107 +697,98 @@ def install_on_ubuntu(handler):
         A tuple containing the response body and HTTP status code.
         The response body is a string containing the command's output.
     """
-    # Install GlusterFS
+    # Supported Ubuntu releases ship GlusterFS 11 in the default universe repository.
     try:
+        response = _cleanup_legacy_glusterfs_ppa(handler)
+        if response is not None:
+            end_stream(handler=handler)
+            return response
+
         write_chunk(
             handler.wfile,
-            "Info: Fetching GlusterFS GPG key from keyserver.ubuntu.com\n",
+            "Info: Checking whether the apt universe repository is enabled.\n",
         )
-        read_cloud_exchange_config_file()
-        set_proxy()
-        pgp_url = "http://keyserver.ubuntu.com/pks/lookup?op=get&search=0xF7C73FCC930AC9F83B387A5613E01B7B3FE869A9"
-        req = urllib.request.Request(pgp_url)
-        proxy = None
-        if AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY", "") != "":
-            proxy = AVAILABLE_INPUTS.get("CORE_HTTPS_PROXY")
-
-        proxies = {}
-
-        if proxy is not None:
-            proxies["http"] = proxy
-            proxies["https"] = proxy
-
-        proxy_support = urllib.request.ProxyHandler(proxies=proxies)
-        opener = urllib.request.build_opener(proxy_support)
-        urllib.request.install_opener(opener)
-
-        response = urllib.request.urlopen(req, timeout=60)
-
-        if response.status != 200:
+        if _is_apt_universe_enabled():
+            write_chunk(
+                handler.wfile, "Info: Apt universe repository is already enabled.\n"
+            )
+        else:
             write_chunk(
                 handler.wfile,
-                f"End: Error encountered while fetching GPG key from Ubuntu keyserver. HTTP status: {response.status}\n",
+                "Info: Apt universe repository is not enabled. Enabling it.\n",
             )
-            end_stream(handler=handler)
-            return {
-                "detail": f"Failed to fetch GPG key. HTTP status: {response.status}"
-            }, 500
-
-        pgp_key = response.read()
+            if os.path.exists("/etc/apt/sources.list.d/ubuntu.sources"):
+                enable_universe_command = (
+                    f"{SUDO_PREFIX} sed -i '/^Components:/ s/$/ universe/' "
+                    "/etc/apt/sources.list.d/ubuntu.sources"
+                )
+            elif os.path.exists("/etc/apt/sources.list"):
+                enable_universe_command = (
+                    f"{SUDO_PREFIX} sed -i -E "
+                    r"'/^[[:space:]]*deb(-src)?([[:space:]]+\[[^]]+\])?[[:space:]]+/ "
+                    r"s/([[:space:]])main([[:space:]]|$)/\1main universe\2/g' "
+                    "/etc/apt/sources.list"
+                )
+            else:
+                write_chunk(
+                    handler.wfile,
+                    "End: Unable to find Ubuntu apt sources file to enable universe.\n",
+                )
+                end_stream(handler=handler)
+                return {
+                    "detail": "Unable to find Ubuntu apt sources file to enable universe."
+                }, 500
+            enable_universe_commands = (
+                f"DEBIAN_FRONTEND=noninteractive {SUDO_PREFIX} apt-get update && "
+                f"{enable_universe_command} && "
+                f"DEBIAN_FRONTEND=noninteractive {SUDO_PREFIX} apt-get update"
+            )
+            for command in enable_universe_commands.split("&&"):
+                response = execute_command_with_logging(
+                    command.strip(),
+                    handler,
+                    shell=True,
+                    message="enabling apt universe repository",
+                )
+                if response[1] != 200:
+                    end_stream(handler=handler)
+                    return response
+            if not _is_apt_universe_enabled():
+                write_chunk(
+                    handler.wfile,
+                    "End: Apt universe repository is still not enabled after configuration.\n",
+                )
+                end_stream(handler=handler)
+                return {"detail": "Failed to enable apt universe repository."}, 500
+            write_chunk(handler.wfile, "Info: Apt universe repository enabled.\n")
     except Exception as e:
         write_chunk(
             handler.wfile,
-            f"End: Error encountered while fetching GPG key from Ubuntu keyserver. Error: {e}\n",
+            f"End: Error encountered while enabling apt universe repository. Error: {e}\n",
         )
         end_stream(handler=handler)
-        return {"detail": f"Error fetching GPG key: {str(e)}"}, 500
+        return {"detail": f"Error enabling apt universe repository: {str(e)}"}, 500
 
-    if os.path.exists("/etc/apt/trusted.gpg.d/gluster.gpg"):
-        write_chunk(
-            handler.wfile,
-            "Info: GPG key already exists at /etc/apt/trusted.gpg.d/gluster.gpg removing it.\n",
-        )
-        os.unlink("/etc/apt/trusted.gpg.d/gluster.gpg")
-
-    decoded_key = pgp_key.decode("utf-8").replace('"', '\\"')
-    gpg_cmd = f'echo "{decoded_key}" | {SUDO_PREFIX} gpg --dearmor -o /etc/apt/trusted.gpg.d/gluster.gpg'
-
-    response = execute_command_with_logging(
-        gpg_cmd,
-        handler,
-        shell=True,
-        message="importing GPG key",
+    write_chunk(
+        handler.wfile,
+        "Info: Pivoting existing GlusterFS packages to Ubuntu repositories.\n",
     )
-    if response[1] != 200:
-        end_stream(handler=handler)
-        return response
-    write_chunk(handler.wfile, "Info: GPG key imported successfully.\n")
-
-    codename = None
-    for result in execute_command(f"{SUDO_PREFIX} lsb_release -sc", shell=True):
-        if result["type"] == "stdout":
-            codename = result["message"].strip()
-        elif result["type"] == "stderr":
-            logger.error(
-                f"Error encountered while fetching release information. {result['message']}",
-                extra={"node": NODE_IP},
-            )
-        elif result["type"] == "returncode" and result["code"] != 0:
-            logger.error(
-                f"Error encountered while fetching release information. Process exited with {result['code']}.",
-                extra={"node": NODE_IP},
-            )
-    if codename is None:
-        write_chunk(
-            handler.wfile,
-            "End: Error encountered while fetching release information for machine.\n",
-        )
-        end_stream(handler=handler)
-        return {
-            "details": "Error encountered while fetching release information for machine."
-        }, 500
-
-    # Add the GlusterFS repository
-    repo_line = f"deb [signed-by=/etc/apt/trusted.gpg.d/gluster.gpg] http://ppa.launchpad.net/gluster/glusterfs-11/ubuntu {codename} main"
-    cat_cmd = f"{SUDO_PREFIX} bash -c 'echo \"{repo_line}\" | tee /etc/apt/sources.list.d/glusterfs-ppa.list'"
-    response = execute_command_with_logging(
-        cat_cmd, handler, shell=True, message="adding GlusterFS repository"
+    pivot_existing_glusterfs_packages_command = (
+        f"DEBIAN_FRONTEND=noninteractive {SUDO_PREFIX} apt-get update && "
+        f"DEBIAN_FRONTEND=noninteractive {SUDO_PREFIX} apt-get install "
+        "--only-upgrade -y glusterfs-server glusterfs-common glusterfs-client glusterfs-cli"
     )
-    if response[1] != 200:
-        end_stream(handler=handler)
-        return response
+    for command in pivot_existing_glusterfs_packages_command.split("&&"):
+        response = execute_command_with_logging(
+            command.strip(),
+            handler,
+            shell=True,
+            message="pivoting existing GlusterFS packages to Ubuntu repositories",
+        )
+        if response[1] != 200:
+            end_stream(handler=handler)
+            return response
 
-    write_chunk(handler.wfile, "Info: GlusterFS repository added.\n")
     write_chunk(handler.wfile, "Info: Installing GlusterFS.\n")
     command_for_installation = (
         f"{SUDO_PREFIX} apt update && DEBIAN_FRONTEND=noninteractive "
@@ -728,6 +802,7 @@ def install_on_ubuntu(handler):
         if response[1] != 200:
             end_stream(handler=handler)
             return response
+
     write_chunk(handler.wfile, "Info: GlusterFS installed on Ubuntu.\n")
     return {"detail": "GlusterFS installed."}, 200
 
