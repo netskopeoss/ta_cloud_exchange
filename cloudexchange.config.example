@@ -17,14 +17,12 @@ LOG_FILE_BACKUP_COUNT=
 # This password is only required once, during the initial setup, and can not be changed later.
 # It is recommended to set a strong password here.
 # If not set, a random 32 character length password will be generated.
-# Special characters (including, but not limited to “#”, “$”, “/”, space, tab, etc.) are not supported when setting the maintenance password for CE.
-# If the password contains Special characters, CE will ignore the provided password and a random 32 character length password will be generated.
+# Non-ASCII characters (e.g., accented letters, other scripts, emoji) are not supported and can cause failures.
 # Please note down the generated Maintenance Password for future reference. It will be required while migrating Cloud Exchange to different machine.
 MAINTENANCE_PASSWORD=
 
 # Secret to used for JWT authentication  (optional), random 32 character length key will be generated
-# Special characters (including, but not limited to “#”, “$”, “/”, space, tab, etc.) are not supported when setting the JWT_SECRET for CE.
-# If the JWT_SECRET contains Special characters, CE will ignore the provided key and a random 32 character length key will be generated.
+# Non-ASCII characters (e.g., accented letters, other scripts, emoji) are not supported and can cause failures.
 # Please note down the above JWT_SECRET for future reference. It will be required in Cloud Exchange HA configuration.
 JWT_SECRET=
 

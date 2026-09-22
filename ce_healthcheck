@@ -1,0 +1,3489 @@
+#!/usr/bin/env python3
+"""Netskope Cloud Exchange pre-flight check.
+
+Run this before installing, upgrading, or migrating Cloud Exchange to
+confirm the host meets the prerequisites for a target CE version.
+
+A single self-contained script: download it and run it directly, with
+no other files, packages or dependencies required.
+
+Run it as root, the same way setup itself is invoked:
+
+    sudo python3 ./ce_healthcheck
+
+This is required, not advisory -- the script exits 2 if it is not root. An
+unprivileged run cannot read the management service's interpreter, and
+rootless `podman ps` reports the invoking user's containers instead of
+root's, which would make a healthy deployment's ports read as failures with
+no indication that anything was missed.
+
+Nothing is ever prompted for. Run context, deployment type (SA/HA) and target
+version are detected from the host, and every one of them can be overridden
+with a flag, so the same invocation behaves identically from a terminal, from
+CI, and from the management server.
+
+    sudo ./ce_healthcheck                      # detect everything
+    sudo ./ce_healthcheck --manifest-path ./checks_bundled.json  # no outbound internet
+    sudo ./ce_healthcheck --quiet              # suppress the detection notes
+    sudo ./ce_healthcheck --html report.html
+    sudo ./ce_healthcheck --mode upgrade --deployment HA --target-version 7.0.0
+
+Standard library only, Python 3.6+, so it runs on any host CE supports.
+
+The sections below, in file order:
+
+    Result records, rendering, reports  a check's result dict, plus the
+                                        console/JSON/HTML renderings of it
+    Version parsing                     the PEP-440 subset CE versions use
+    Guarded execution                   the only way this script shells out
+                                        or reaches the network
+    Host facts                          everything measured about the host,
+                                        collected once up front
+    Check engine                        the primitives a manifest entry may
+                                        name, and what each one means
+    The check manifest                  fetching and validating the check
+                                        definitions
+    Host detection and CLI              detect mode/deployment/version, then
+                                        main()
+
+Known limitation: this tool does not validate the CE deployment directory's
+file/folder structure or permissions (e.g. data/mongo-data, data/ca_certs,
+./start, ./stop). It is a pre-install/pre-upgrade check that can run before
+that structure exists at all, and setup's own
+check_and_apply_file_permissions() creates and repairs these paths itself
+during install/upgrade. A clean pass here does not guarantee they are
+present or correctly permissioned on an existing deployment.
+"""
+
+__version__ = '1.0.0'
+
+import argparse
+import datetime
+import json
+import multiprocessing
+import os
+import platform
+import re
+import shutil
+import socket
+import ssl
+import stat
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+# ============================================================================
+# Result records, console rendering, and JSON report output
+# ============================================================================
+
+class Level(object):
+    PASS = "PASS"
+    WARN = "WARN"
+    FAIL = "FAIL"
+    SKIP = "SKIP"
+    NOT_VERIFIED = "NOT_VERIFIED"
+
+
+# ANSI sequences copied verbatim from data/management_server/utils.py:1807-1816
+# so this script's output is indistinguishable from `setup`'s.
+_PASS_FMT = "\033[0;32m[P] \033[0;37m{0}"
+_WARN_FMT = "\033[1;93m[!] \033[0;37m{0}"
+_FAIL_FMT = "\033[1;31m[F] \033[1;37m{0}\033[0;37m"
+_PLAIN_FMT = "[-] {0}"
+
+_LINE_FORMATS = {
+    Level.PASS: _PASS_FMT,
+    Level.WARN: _WARN_FMT,
+    Level.FAIL: _FAIL_FMT,
+    Level.SKIP: _PLAIN_FMT,
+    Level.NOT_VERIFIED: _WARN_FMT,
+}
+
+# Whole-line notices (a manifest warning, the final verdict), as opposed to
+# the per-check rows above. A warning notice keeps the "[!]" marker; the
+# failure verdict drops "[F]", which belongs only on a single check's row.
+_NOTICE_WARN_FMT = _WARN_FMT
+_NOTICE_FAIL_FMT = "\033[1;31m{0}\033[0;37m"
+
+
+# A sentinel, not None: None is itself a valid expected_label value here,
+# so it can't also mean "the caller didn't set one".
+_UNSET = object()
+
+
+def make_result(check_id, level, message, actual=None, expected=None, remedy=None,
+                label=None, check_type=None, category=None, expected_label=_UNSET):
+    """Build one check result record.
+
+    `message` is the full "<name>: <detail>" string kept for the JSON report.
+    `label` is the check's name on its own; the console shows only this, so
+    operator-facing output stays free of internal diagnostic text.
+
+    `expected_label` says how a renderer should introduce `expected` --
+    "minimum" for a floor, "recommended" for a soft target, "required" for
+    an exact match, or None to show no explanation of `expected` at all
+    (every boolean-valued check, and every check on a PASS -- a value that
+    already satisfies what was expected needs no explaining). Left
+    unset (the sentinel _UNSET, not None) here on purpose: run_check()
+    backfills the real default centrally via _default_expected_label() the
+    same way it backfills label/type/category, UNLESS a primitive passed
+    this explicitly (cpu_profile does this: its two distinct FAIL cases --
+    CPU count matching no profile at all vs. memory/disk below a matched
+    profile's floor -- need different labels despite sharing one `type`,
+    which a type-keyed table can never express). A renderer (the console,
+    the HTML report, the UI) reads this field directly instead of
+    maintaining its own copy of which primitive types are threshold-style
+    or which levels are worth explaining, so a new check -- even one using
+    a brand new primitive type -- renders correctly with no renderer-side
+    change at all.
+    """
+    result = {
+        "id": check_id,
+        "level": level,
+        "message": message,
+        "label": label,
+        # Lets a report group by what a check is about, not list them flat.
+        "type": check_type,
+        "category": category,
+        "actual": actual,
+        "expected": expected,
+        "remedy": remedy,
+    }
+    # Only set the key when a call site passed something -- run_check()
+    # tells "unset" from "explicitly None" by whether the key exists.
+    if expected_label is not _UNSET:
+        result["expected_label"] = expected_label
+    return result
+
+
+# Right-pad the name so the status words line up into a column regardless of
+# check-name length, the way a status table reads rather than a log stream.
+_LABEL_WIDTH = 58
+
+# Primitive -> operator-facing group. The primitive name is an implementation
+# detail ("min_resource"); the group is what an operator reads.
+CHECK_CATEGORIES = {
+    "min_resource": "System resources",
+    "cpu_profile": "System resources",
+    "runtime_detected": "System resources",
+    "cpu_flag": "System resources",
+    "bool_fact": "Files and packages",
+    "os_supported": "Operating system",
+    "version_min": "Versions",
+    "version_recommended": "Versions",
+    "python_version_drift": "Versions",
+    "http_reachable": "Connectivity",
+    "port_free": "Connectivity",
+    "port_range_free": "Connectivity",
+    "port_reachable": "Connectivity",
+    "ha_peer_ports": "Connectivity",
+    "path_exists": "Files and packages",
+    "file_contains": "Files and packages",
+    "file_absent": "Files and packages",
+    "command_matches": "Files and packages",
+    "command_output_empty": "Files and packages",
+}
+
+# Order groups are presented in: what blocks an install first, environment
+# detail after.
+CATEGORY_ORDER = [
+    "System resources",
+    "Operating system",
+    "Versions",
+    "Connectivity",
+    "Files and packages",
+    "Other",
+]
+
+
+def category_for(check_type):
+    """Operator-facing group for a primitive type."""
+    return CHECK_CATEGORIES.get(check_type, "Other")
+
+
+_STATUS_WORDS = {
+    Level.PASS: "PASS",
+    Level.WARN: "WARNING",
+    Level.FAIL: "FAILED",
+    Level.SKIP: "NOT APPLICABLE",
+    Level.NOT_VERIFIED: "NOT VERIFIED",
+}
+
+
+def display_name(result):
+    """The check's name, without any appended diagnostic detail."""
+    label = result.get("label")
+    if label:
+        return label
+    # Older/handcrafted records carry only the combined string; recover the
+    # name by splitting at the first ": " separator _message() inserted.
+    message = result.get("message") or result.get("id") or ""
+    return message.split(": ", 1)[0]
+
+
+def format_line(result):
+    """Render a single result as one aligned, colored console line."""
+    fmt = _LINE_FORMATS.get(result["level"], _PLAIN_FMT)
+    status = _STATUS_WORDS.get(result["level"], result["level"])
+    name = display_name(result)
+    # A manifest-supplied name longer than the column would push the status
+    # word out of alignment, so truncate rather than let one long check name
+    # ragged-edge the whole table.
+    if len(name) > _LABEL_WIDTH:
+        name = name[:_LABEL_WIDTH - 3] + "..."
+    name = name.ljust(_LABEL_WIDTH, ".")
+    return fmt.format("{0} {1}".format(name, status))
+
+
+def print_result(result):
+    """Print one result, followed by its corrective measure when present."""
+    print(format_line(result))
+    if result.get("remedy") and result["level"] in (Level.FAIL, Level.WARN):
+        print("    {0}".format(result["remedy"]))
+
+
+def summarize(results):
+    """Count results by level."""
+    counts = {
+        "total": len(results),
+        "passed": 0,
+        "warned": 0,
+        "failed": 0,
+        "skipped": 0,
+        "not_verified": 0,
+    }
+    key_by_level = {
+        Level.PASS: "passed",
+        Level.WARN: "warned",
+        Level.FAIL: "failed",
+        Level.SKIP: "skipped",
+        Level.NOT_VERIFIED: "not_verified",
+    }
+    for result in results:
+        key = key_by_level.get(result["level"])
+        if key:
+            counts[key] += 1
+    return counts
+
+
+def exit_code(results):
+    """0 unless at least one check failed."""
+    for result in results:
+        if result["level"] == Level.FAIL:
+            return 1
+    return 0
+
+
+def _utc_now_iso():
+    """Current UTC time as an ISO-8601 'Z' string.
+
+    datetime.utcnow() is deprecated on Python 3.12+ and prints a
+    DeprecationWarning to stderr on every run -- visible to the operator and
+    noise in a support transcript. datetime.timezone.utc exists on every
+    Python this script supports (3.6+), so prefer the aware form and format
+    it to the same '...Z' shape the report has always used.
+    """
+    stamp = datetime.datetime.now(datetime.timezone.utc)
+    return stamp.replace(tzinfo=None).isoformat() + "Z"
+
+
+def _restrict_permissions(path):
+    """Reports embed the full host fact set; keep them 0600, best-effort."""
+    try:
+        os.chmod(path, 0o600)
+    except (IOError, OSError):
+        pass
+
+
+def _open_private(path):
+    """Open `path` for writing, created 0600 so it is never world-readable.
+
+    open() creates at the umask default, leaving the full host fact set
+    readable in the window before the chmod that follows the write.
+    """
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    return os.fdopen(fd, "w")
+
+
+def write_json_report(path, facts, results, meta):
+    """Write the machine-readable report for Engineering review."""
+    payload = build_payload(facts, results, meta)
+    with _open_private(path) as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True, default=str)
+        handle.write("\n")
+    _restrict_permissions(path)
+
+
+def build_payload(facts, results, meta):
+    """The report structure shared by the JSON and HTML writers."""
+    return {
+        "generated_at": _utc_now_iso(),
+        "meta": meta,
+        "facts": facts,
+        "results": results,
+        "summary": summarize(results),
+    }
+
+
+# --------------------------------------------------------------------------
+# HTML report
+# --------------------------------------------------------------------------
+
+# Inline everything: this file is downloaded from the UI and opened from a
+# local filesystem, often on a machine with no route back to the appliance,
+# so an external stylesheet or font would simply fail to load.
+_HTML_STYLE = """
+:root { color-scheme: light dark; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+       Helvetica, Arial, sans-serif; margin: 0; padding: 2rem;
+       background: #f6f7f9; color: #1c2024; }
+main { max-width: 60rem; margin: 0 auto; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; }
+.sub { color: #5b6470; margin: 0 0 1.5rem; font-size: .9rem; }
+.card { background: #fff; border: 1px solid #e3e6ea; border-radius: 8px;
+        padding: 1.25rem 1.5rem; margin-bottom: 1.25rem; }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: .35rem 1rem;
+        font-size: .9rem; }
+.meta dt { color: #5b6470; }
+.meta dd { margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo,
+           Consolas, monospace; }
+.tiles { display: flex; flex-wrap: wrap; gap: .5rem; margin-bottom: 1.25rem; }
+.tile { flex: 1 1 7rem; background: #fff; border: 1px solid #e3e6ea;
+        border-radius: 8px; padding: .75rem 1rem; }
+.tile .n { font-size: 1.5rem; font-weight: 600; }
+.tile .l { font-size: .75rem; color: #5b6470; text-transform: uppercase;
+           letter-spacing: .04em; }
+table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+th { text-align: left; font-size: .75rem; text-transform: uppercase;
+     letter-spacing: .04em; color: #5b6470; border-bottom: 1px solid #e3e6ea;
+     padding: .5rem .5rem .5rem 0; }
+td { padding: .55rem .5rem .55rem 0; border-bottom: 1px solid #f0f2f4;
+     vertical-align: top; }
+tr:last-child td { border-bottom: none; }
+.badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px;
+         font-size: .75rem; font-weight: 600; white-space: nowrap; }
+.PASS { background: #e6f4ea; color: #1e7b34; }
+.WARN { background: #fdf3d8; color: #8a6100; }
+.FAIL { background: #fbe6e6; color: #a30000; }
+.SKIP, .NOT_VERIFIED { background: #eceef1; color: #5b6470; }
+.remedy { color: #5b6470; font-size: .85rem; margin-top: .25rem; }
+tr.group td { font-weight: 600; font-size: .75rem; text-transform: uppercase;
+              letter-spacing: .04em; color: #5b6470; padding-top: 1rem;
+              border-bottom: 1px solid #e3e6ea; }
+td.val { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+         font-size: .85rem; color: #5b6470; white-space: nowrap; }
+.verdict { font-weight: 600; padding: .85rem 1rem; border-radius: 8px;
+           margin-bottom: 1.25rem; }
+.verdict.ok { background: #e6f4ea; color: #1e7b34; }
+.verdict.bad { background: #fbe6e6; color: #a30000; }
+footer { color: #5b6470; font-size: .8rem; text-align: center;
+         margin-top: 2rem; }
+@media (prefers-color-scheme: dark) {
+  body { background: #16181b; color: #e6e8ea; }
+  .card, .tile { background: #1e2125; border-color: #2c3036; }
+  th { color: #9aa4b0; border-color: #2c3036; }
+  td { border-color: #24282d; }
+  .meta dt, .sub, .tile .l, .remedy, footer { color: #9aa4b0; }
+  tr.group td, td.val { color: #9aa4b0; border-color: #2c3036; }
+}
+""".strip()
+
+
+def _escape(value):
+    """Minimal HTML escaping (no cgi/html module dependency assumptions)."""
+    text = "" if value is None else str(value)
+    return (text.replace("&", "&amp;").replace("<", "&lt;")
+                .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+_MAX_VALUE_CHARS = 40
+
+# Boolean-valued primitives never get an expected_label -- "expected true"
+# never explains anything, on any level.
+_BOOLEAN_TYPES = frozenset([
+    "cpu_flag",
+    "bool_fact",
+])
+
+# Primitives where `expected` really is a lower bound (a version or a
+# resource number). Everywhere else it is an exact requirement (an OS list,
+# a runtime name, a path, a regex) or a soft target.
+_THRESHOLD_TYPES = frozenset([
+    "min_resource",
+    "version_min",
+    "python_version_drift",
+])
+
+# Never fails -- a shortfall is always WARN, against a soft target rather
+# than a hard floor, so "recommended" reads correctly where "minimum" would
+# overstate it as a requirement.
+_RECOMMENDED_TYPES = frozenset([
+    "version_recommended",
+])
+
+
+def _default_expected_label(check_type, level):
+    """The expected_label run_check() backfills when a primitive didn't set
+    one itself.
+
+    None on PASS always: the value already satisfying whatever was expected
+    IS the confirmation, so there is nothing to explain. None for a
+    boolean-valued primitive on any level: "expected true" never explains
+    anything. Otherwise "recommended" for the soft-target primitive,
+    "minimum" for a real floor, "required" for an exact-match requirement.
+    """
+    if level == Level.PASS or check_type in _BOOLEAN_TYPES:
+        return None
+    if check_type in _RECOMMENDED_TYPES:
+        return "recommended"
+    if check_type in _THRESHOLD_TYPES:
+        return "minimum"
+    return "required"
+
+
+def _expected_label(result):
+    """How to introduce `expected`, or None to show no explanation at all.
+
+    run_check() sets `expected_label` on every result via
+    _default_expected_label(), unless a primitive set it explicitly per
+    call site (cpu_profile does this: its two distinct FAIL cases --
+    CPU-count mismatch vs. a matched profile's memory/disk shortfall --
+    need different labels despite sharing one `type`). Fall back to the
+    same default logic only for a result that bypassed run_check() entirely
+    (no such path exists today, but a result dict built by hand -- e.g. a
+    test fixture -- might not have gone through it).
+    """
+    if "expected_label" in result:
+        return result["expected_label"]
+    return _default_expected_label(result.get("type"), result.get("level"))
+
+
+def _short_value(value):
+    """A compact single-line value, or None when it isn't presentable."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    # Multi-line or long values are raw command output, not a measurement.
+    if "\n" in text or len(text) > _MAX_VALUE_CHARS:
+        return None
+    return text
+
+
+def _result_row(result):
+    level = result.get("level", "")
+    remedy = ""
+    if result.get("remedy") and level in (Level.FAIL, Level.WARN):
+        remedy = '<div class="remedy">{0}</div>'.format(
+            _escape(result["remedy"]))
+
+    # "3.11.13 (minimum 3.12)" answers "why did this fail" without opening
+    # the JSON report; _expected_label() alone decides whether to show it.
+    # Some primitives put raw command output in `actual` -- keep this to a
+    # short single-line value, never the full text (that stays in the JSON).
+    detail = ""
+    actual = _short_value(result.get("actual"))
+    expected = _short_value(result.get("expected"))
+    label = _expected_label(result)
+    show_expected = bool(label) and expected is not None and str(expected) != ""
+    if actual is not None and str(actual) != "":
+        if show_expected:
+            # label is escaped too: --render-html assembles it from peer-node
+            # payloads, so it is not trusted input on that path.
+            detail = "{0} ({1} {2})".format(
+                _escape(actual), _escape(label), _escape(expected))
+        else:
+            detail = _escape(actual)
+    elif show_expected:
+        detail = "{0} {1}".format(_escape(label), _escape(expected))
+
+    return (
+        "<tr><td>{name}{remedy}</td><td class=\"val\">{detail}</td>"
+        '<td><span class="badge {level}">{status}</span></td></tr>'.format(
+            name=_escape(display_name(result)),
+            remedy=remedy,
+            detail=detail,
+            level=_escape(level),
+            status=_escape(_STATUS_WORDS.get(level, level)),
+        ))
+
+
+def _html_rows(results):
+    """Rows grouped by category, each group under a heading row.
+
+    Grouping by what a check is about ("Connectivity", "Versions") rather
+    than one flat list -- a 26-check report is hard to scan otherwise.
+    """
+    grouped = {}
+    for result in results:
+        grouped.setdefault(
+            result.get("category") or "Other", []).append(result)
+
+    ordered = [c for c in CATEGORY_ORDER if c in grouped]
+    ordered += [c for c in sorted(grouped) if c not in CATEGORY_ORDER]
+
+    rows = []
+    for category in ordered:
+        rows.append('<tr class="group"><td colspan="3">{0}</td></tr>'.format(
+            _escape(category)))
+        for result in grouped[category]:
+            rows.append(_result_row(result))
+    return "\n".join(rows)
+
+
+def _html_node_section(payload, node_label=None):
+    """One node's meta, tiles and results table."""
+    counts = payload.get("summary") or {}
+    meta = payload.get("meta") or {}
+    results = payload.get("results") or []
+
+    tiles = "".join(
+        '<div class="tile"><div class="n">{0}</div>'
+        '<div class="l">{1}</div></div>'.format(counts.get(key, 0), label)
+        for key, label in (("passed", "Passed"), ("warned", "Warnings"),
+                           ("failed", "Failed"), ("skipped", "Not applicable"),
+                           ("not_verified", "Not verified")))
+
+    meta_rows = "".join(
+        "<dt>{0}</dt><dd>{1}</dd>".format(_escape(label), _escape(value))
+        for label, value in (
+            ("Mode", meta.get("mode")),
+            ("Deployment type", meta.get("deployment")),
+            ("Target CE version", meta.get("target_version")),
+            ("Installed version", meta.get("installed_version") or "not detected"),
+            ("Deployment directory", meta.get("deployment_dir")),
+            ("Check definitions", meta.get("manifest_source")),
+            ("Script version", meta.get("script_version")),
+        ) if value is not None)
+
+    heading = ""
+    if node_label:
+        heading = "<h2>{0}</h2>".format(_escape(node_label))
+
+    failed = (counts.get("failed") or 0) > 0
+    total = counts.get("total") or 0
+    all_not_verified = total > 0 and counts.get("not_verified") == total
+    verdict_class = "bad" if failed else "ok"
+    if failed:
+        verdict = ("One or more prerequisite checks have failed. Please ensure "
+                   "the minimum system requirements are met to proceed further.")
+    elif all_not_verified:
+        # Nothing failed because nothing was actually checked -- reporting
+        # this the same way as a clean pass would tell an operator the host
+        # is ready when it was never assessed at all.
+        verdict = ("None of the prerequisite checks for Cloud Exchange {0} "
+                   "could be verified on this host. This is not a pass -- "
+                   "re-run once the conditions needed to check them are in "
+                   "place.".format(meta.get("target_version", "")))
+    elif counts.get("not_verified"):
+        verdict = ("Verified {0} of {1} checks for Cloud Exchange {2}; {3} "
+                   "could not be verified. No mandatory prerequisite failed. "
+                   "Review the items below before proceeding.".format(
+                       total - (counts.get("not_verified") or 0), total,
+                       meta.get("target_version", ""),
+                       counts.get("not_verified")))
+    elif counts.get("warned"):
+        verdict = ("This host meets the mandatory prerequisites for Cloud "
+                   "Exchange {0}. Review the warnings below before "
+                   "proceeding.".format(meta.get("target_version", "")))
+    else:
+        verdict = ("This host meets the prerequisites for Cloud Exchange "
+                   "{0}.".format(meta.get("target_version", "")))
+
+    return (
+        '{heading}<div class="verdict {vclass}">{verdict}</div>'
+        '<div class="tiles">{tiles}</div>'
+        '<div class="card"><dl class="meta">{meta_rows}</dl></div>'
+        '<div class="card"><table><thead><tr><th>Check</th>'
+        "<th>Value</th><th>Result</th></tr></thead>"
+        "<tbody>{rows}</tbody></table></div>"
+    ).format(heading=heading, vclass=verdict_class, verdict=_escape(verdict),
+             tiles=tiles, meta_rows=meta_rows, rows=_html_rows(results))
+
+
+def render_html_report(payloads, title="Cloud Exchange Health Check"):
+    """Render one or more node payloads into a single self-contained page.
+
+    `payloads` is either one payload dict (single host) or a list of
+    (node_label, payload) pairs -- the HA case, where the management server
+    fans the check out to every node and merges the results into one
+    downloadable file.
+    """
+    if isinstance(payloads, dict):
+        sections = _html_node_section(payloads)
+        generated = payloads.get("generated_at", "")
+    else:
+        sections = "\n".join(
+            _html_node_section(payload, label) for label, payload in payloads)
+        generated = payloads[0][1].get("generated_at", "") if payloads else ""
+
+    return (
+        "<!DOCTYPE html>\n"
+        '<html lang="en"><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        "<title>{title}</title><style>{style}</style></head>"
+        "<body><main><h1>{title}</h1>"
+        '<p class="sub">Generated {generated}</p>'
+        "{sections}"
+        "<footer>Netskope Cloud Exchange pre-flight health check</footer>"
+        "</main></body></html>\n"
+    ).format(title=_escape(title), style=_HTML_STYLE,
+             generated=_escape(generated), sections=sections)
+
+
+def write_html_report(path, payloads, title="Cloud Exchange Health Check"):
+    """Write the operator-facing HTML report (downloadable from the UI)."""
+    with _open_private(path) as handle:
+        handle.write(render_html_report(payloads, title=title))
+    _restrict_permissions(path)
+
+# ============================================================================
+# Version parsing: the subset of PEP-440 ordering CE uses, stdlib-only.
+# ============================================================================
+
+# Matches every version CE produces, including "7.0.0-beta.1" and the
+# irregular "5.1.1-dlp-beta-1" (verified against netskope/common/migrations/).
+_VERSION_RE = re.compile(
+    r"^\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:\.(\d+))?"
+    r"(?:[-_.]+[A-Za-z][A-Za-z0-9]*)*?"
+    r"(?:[-_.]+(alpha|a|beta|b|rc|c)(?:[-_.]?(\d+))?)?"
+    r"\s*$",
+    re.IGNORECASE,
+)
+
+_LOOSE_VERSION_RE = re.compile(r"(\d+(?:\.\d+){1,3})")
+
+# Pre-release rank: lower sorts earlier. 3 == final release.
+_PRE_RANK = {"alpha": 0, "a": 0, "beta": 1, "b": 1, "rc": 2, "c": 2}
+
+
+def parse_version(text):
+    """Parse a version string into a comparable tuple."""
+    if text is None:
+        raise ValueError("version is None")
+    match = _VERSION_RE.match(str(text))
+    if not match:
+        raise ValueError("unparseable version: {0!r}".format(text))
+    major = int(match.group(1))
+    minor = int(match.group(2) or 0)
+    patch = int(match.group(3) or 0)
+    pre_word = match.group(5)
+    if pre_word:
+        pre_rank = _PRE_RANK[pre_word.lower()]
+        pre_num = int(match.group(6) or 0)
+    else:
+        pre_rank = 3
+        pre_num = 0
+    return (major, minor, patch, pre_rank, pre_num)
+
+
+def extract_version(text):
+    """Pull the first dotted version out of arbitrary command output."""
+    if not text:
+        return None
+    match = _LOOSE_VERSION_RE.search(str(text))
+    return match.group(1) if match else None
+
+
+def extract_labeled_version(text, label):
+    """Pull the version from the line that starts with `label`, if any.
+
+    `podman-compose --version` prints Podman's own version on the first line
+    (it shells out to `podman --version` as a diagnostic) and podman-compose's
+    version on a later line -- plain extract_version() would grab the first
+    one and misreport the compose tool's version as the runtime's. Falls back
+    to extract_version() over the whole text when no line starts with the
+    label, so single-line tool output (docker, podman itself) is unaffected.
+    """
+    if not text:
+        return None
+    label = label.lower()
+    for line in str(text).splitlines():
+        if line.strip().lower().startswith(label):
+            version = extract_version(line)
+            if version:
+                return version
+    return extract_version(text)
+
+
+def compare_versions(left, right):
+    """Return -1, 0, or 1 comparing two version strings."""
+    left_key = parse_version(left)
+    right_key = parse_version(right)
+    if left_key < right_key:
+        return -1
+    if left_key > right_key:
+        return 1
+    return 0
+
+
+# ============================================================================
+# Guarded subprocess execution and HTTPS fetching -- every external call
+# goes through run_command() or http_get(), so the rules live in one place.
+# ============================================================================
+
+# Only these executables may ever be invoked, no matter what a manifest
+# asks for. Adding an entry here is a deliberate, reviewed change.
+#
+# python/python3 deliberately NOT here: `python3 -c "<anything>"` is
+# arbitrary code execution with no subcommand shape that can be safely
+# pinned. Interpreter version and module checks are hardcoded facts
+# instead (setup_python_version, pip_available, etc.), never manifest-reachable.
+ALLOWED_COMMANDS = frozenset([
+    "df",
+    "docker",
+    "docker-compose",
+    "free",
+    "getenforce",
+    "git",
+    "lscpu",
+    "openssl",
+    "pgrep",
+    "podman",
+    "podman-compose",
+    "rpm",
+    "sestatus",
+    "systemctl",
+    "uname",
+])
+
+# Pinning argv[0]/argv[1] was escapable (`rpm -qa --pipe "<cmd>"` is RCE;
+# `git diff --output=<path>` is a file write) -- options aren't subcommands,
+# so the WHOLE argv must now match ALLOWED_ARGV exactly.
+ARGV_PINNED_COMMANDS = frozenset([
+    "docker",
+    "docker-compose",
+    "git",
+    "openssl",
+    "podman",
+    "podman-compose",
+    "rpm",
+    "systemctl",
+])
+
+ALLOWED_ARGV = frozenset([
+    ("docker", "--version"),
+    ("docker", "compose", "version"),
+    ("docker-compose", "--version"),
+    ("podman", "--version"),
+    ("podman-compose", "--version"),
+    ("docker", "ps", "--format", "{{.Names}}"),
+    ("podman", "ps", "--format", "{{.Names}}"),
+    ("systemctl", "is-active", "cloud-exchange"),
+    ("systemctl", "show", "-p", "MainPID", "--value", "cloud-exchange"),
+    ("openssl", "version"),
+    ("rpm", "-qa"),
+    ("git", "diff", "-G."),
+])
+
+# Everything else (df, free, lscpu, uname, getenforce, sestatus, pgrep) has
+# no state-changing form, so it stays free-form.
+
+_MAX_OUTPUT_CHARS = 64 * 1024
+
+
+def _failure(error, returncode=None):
+    return {
+        "ok": False,
+        "stdout": "",
+        "stderr": "",
+        "returncode": returncode,
+        "error": error,
+    }
+
+
+def check_argv_allowed(argv):
+    """None when `argv` may run, else why not. Shared by run_command() and
+    _validate_check() so load-time and run-time agree."""
+    if not argv:
+        return "empty command"
+
+    # Match the BARE name: basename("/tmp/evil/git") is "git", so a manifest
+    # could otherwise point at an attacker-planted binary of the same name.
+    program = str(argv[0])
+    if os.sep in program or (os.altsep and os.altsep in program):
+        return "command must be a bare name, not a path: {0!r}".format(argv[0])
+    if program not in ALLOWED_COMMANDS:
+        return "command not allowlisted: {0!r}".format(argv[0])
+
+    if program in ARGV_PINNED_COMMANDS:
+        exact = tuple(str(item) for item in argv)
+        if exact not in ALLOWED_ARGV:
+            # Never echoes the rejected argv back -- it's untrusted text.
+            return ("command line not allowlisted for {0} (this binary "
+                    "requires an exact match)".format(program))
+    return None
+
+
+def run_command(argv, timeout=15, cwd=None, env=None):
+    """Run an allowlisted command with no shell involvement.
+
+    `env`, when given, is merged on top of the current process environment
+    (not a full replacement) -- so PATH and other ambient variables a
+    command needs to run at all are preserved; only the specific keys in
+    `env` are overridden.
+    """
+    refusal = check_argv_allowed(argv)
+    if refusal is not None:
+        return _failure(refusal)
+    program = str(argv[0])
+
+    full_env = None
+    if env:
+        full_env = os.environ.copy()
+        full_env.update(env)
+
+    try:
+        process = subprocess.Popen(
+            [str(item) for item in argv],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,  # never a shell: manifest data must not reach one
+            cwd=cwd,
+            env=full_env,
+        )
+    except OSError as error:
+        return _failure("could not execute {0}: {1}".format(program, error))
+
+    try:
+        stdout, stderr = process.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate()
+        return _failure("command timed out after {0}s".format(timeout))
+
+    decode = lambda raw: raw.decode("utf-8", "replace")[:_MAX_OUTPUT_CHARS]
+    return {
+        "ok": process.returncode == 0,
+        "stdout": decode(stdout),
+        "stderr": decode(stderr),
+        "returncode": process.returncode,
+        "error": "" if process.returncode == 0 else "exit status {0}".format(
+            process.returncode
+        ),
+    }
+
+
+class _HttpsOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow any redirect that would leave https://.
+
+    urllib's default HTTPRedirectHandler will happily follow a 301/302
+    from an https:// URL to a plain http:// Location header. A compromised
+    or MITM'd server could use that to downgrade us off TLS entirely, which
+    defeats the whole point of the scheme check below. This subclass makes
+    that scheme downgrade impossible instead of relying on urllib's default
+    behavior (which has varied across Python 3.6+ patch versions).
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        scheme = urllib.parse.urlsplit(newurl).scheme.lower()
+        if scheme != "https":
+            raise urllib.error.URLError(
+                "refusing redirect to non-https URL: {0!r}".format(newurl)
+            )
+        return urllib.request.HTTPRedirectHandler.redirect_request(
+            self, req, fp, code, msg, headers, newurl
+        )
+
+
+def http_get(url, timeout=30, max_bytes=1024 * 1024, proxy=None):
+    """HTTPS GET with mandatory certificate and hostname verification."""
+    text = str(url or "")
+    if not text.lower().startswith("https://"):
+        return {
+            "ok": False,
+            "status": None,
+            "body": b"",
+            "error": "refusing non-https URL: {0!r}".format(url),
+        }
+
+    # create_default_context() verifies certificates and hostnames. There is
+    # deliberately no code path here that weakens it.
+    context = ssl.create_default_context()
+
+    if proxy:
+        opener = urllib.request.build_opener(
+            urllib.request.ProxyHandler({"https": proxy}),
+            urllib.request.HTTPSHandler(context=context),
+            _HttpsOnlyRedirectHandler(),
+        )
+    else:
+        opener = urllib.request.build_opener(
+            urllib.request.HTTPSHandler(context=context),
+            _HttpsOnlyRedirectHandler(),
+        )
+
+    request = urllib.request.Request(text, headers={"User-Agent": "netskope-ce-healthcheck"})
+    try:
+        response = opener.open(request, timeout=timeout)
+    except urllib.error.HTTPError as error:
+        return {"ok": False, "status": error.code, "body": b"",
+                "error": "HTTP {0}".format(error.code)}
+    except Exception as error:  # socket, TLS, DNS, proxy failures
+        return {"ok": False, "status": None, "body": b"", "error": str(error)}
+
+    try:
+        # Read one byte past the cap so an oversized body is detectable.
+        body = response.read(max_bytes + 1)
+    finally:
+        response.close()
+
+    if len(body) > max_bytes:
+        return {"ok": False, "status": getattr(response, "status", None), "body": b"",
+                "error": "response exceeded {0} bytes".format(max_bytes)}
+
+    return {
+        "ok": True,
+        "status": getattr(response, "status", None) or response.getcode(),
+        "body": body,
+        "error": "",
+    }
+
+# ============================================================================
+# Host facts -- collected once by collect(), so every check is a pure
+# comparison over a dict.
+# ============================================================================
+
+_BYTES_PER_GB = float(1024 ** 3)
+
+
+def cpu_count():
+    try:
+        return multiprocessing.cpu_count()
+    except NotImplementedError:
+        return None
+
+
+def cpu_supports_avx(cpuinfo_path="/proc/cpuinfo"):
+    """True/False when /proc/cpuinfo is readable, None when it isn't."""
+    # Deliberately as naive as setup's own cpu_supports_avx() (setup:1493):
+    # a case-sensitive substring over the whole file. A stricter token match
+    # would FAIL hosts setup passes, and this gate must predict setup.
+    try:
+        with open(cpuinfo_path) as handle:
+            return "avx" in handle.read()
+    except (IOError, OSError):
+        return None
+
+
+def cpu_flags(cpuinfo_path="/proc/cpuinfo"):
+    """Set of lowercase CPU flag tokens from /proc/cpuinfo's `flags` line.
+
+    None when the file isn't readable, so callers can distinguish "no flags
+    supported" from "couldn't determine flags" the same way avx_support does.
+    """
+    try:
+        with open(cpuinfo_path) as handle:
+            for line in handle:
+                name, _, value = line.partition(":")
+                if name.strip().lower() in ("flags", "features"):
+                    return set(value.strip().lower().split())
+    except (IOError, OSError):
+        return None
+    return None
+
+
+def memory_total_gb(meminfo_path="/proc/meminfo"):
+    try:
+        with open(meminfo_path) as handle:
+            for line in handle:
+                if line.startswith("MemTotal:"):
+                    kilobytes = float(line.split()[1])
+                    return round(kilobytes * 1024 / _BYTES_PER_GB, 2)
+    except (IOError, OSError, IndexError, ValueError):
+        return None
+    return None
+
+
+def disk_usage_gb(path):
+    try:
+        usage = shutil.disk_usage(path)
+    except (IOError, OSError, AttributeError):
+        return {"total_gb": None, "free_gb": None}
+    return {
+        "total_gb": round(usage.total / _BYTES_PER_GB, 2),
+        "free_gb": round(usage.free / _BYTES_PER_GB, 2),
+    }
+
+
+def os_release(path="/etc/os-release"):
+    info = {"pretty_name": None, "id": None, "version_id": None}
+    keys = {"PRETTY_NAME": "pretty_name", "ID": "id", "VERSION_ID": "version_id"}
+    try:
+        with open(path) as handle:
+            for line in handle:
+                if "=" not in line:
+                    continue
+                name, _, value = line.partition("=")
+                key = keys.get(name.strip())
+                if key:
+                    info[key] = value.strip().strip('"').strip("'")
+    except (IOError, OSError):
+        return info
+    return info
+
+
+def _probe_docker():
+    info = {"runtime": None, "runtime_version": None, "compose_version": None}
+    docker = run_command(["docker", "--version"])
+    if not docker["ok"]:
+        return None
+    info["runtime"] = "docker"
+    info["runtime_version"] = extract_version(docker["stdout"])
+    compose = run_command(["docker", "compose", "version"])
+    if compose["ok"]:
+        info["compose_version"] = extract_version(compose["stdout"])
+    return info
+
+
+def _probe_podman():
+    info = {"runtime": None, "runtime_version": None, "compose_version": None}
+    podman = run_command(["podman", "--version"])
+    if not podman["ok"]:
+        return None
+    info["runtime"] = "podman"
+    info["runtime_version"] = extract_version(podman["stdout"])
+    compose = run_command(["podman-compose", "--version"])
+    if compose["ok"]:
+        # podman-compose --version prints podman's own version first, then
+        # podman-compose's on its own line -- plain extract_version() would
+        # grab the wrong one. Confirmed live on RHEL 9 / podman-compose 1.5.0.
+        info["compose_version"] = extract_labeled_version(
+            compose["stdout"], "podman-compose")
+    return info
+
+
+def container_runtime(os_id=None):
+    """Detect docker or podman plus the matching compose version.
+
+    Probes in the same order setup itself does (setup.check_prerequisites():
+    Docker first unless the host is RedHat-family, in which case Podman is
+    tried first, with the other as a fallback -- see isRedHat()'s branch).
+    Matching that order matters on a host with both runtimes installed, or
+    with a podman-docker compatibility shim providing a `docker` binary
+    backed by Podman: probing in setup's own order resolves the SAME runtime
+    setup itself would settle on, rather than always preferring whichever
+    binary happens to be probed first.
+    """
+    first, second = (_probe_podman, _probe_docker) if os_id == "rhel" \
+        else (_probe_docker, _probe_podman)
+    return first() or second() or {
+        "runtime": None, "runtime_version": None, "compose_version": None}
+
+
+def running_ce_containers():
+    """Which CE services already have a container up on this host.
+
+    setup treats a busy port as a failure ONLY when the matching container
+    isn't already running -- if it is, the port being taken is the expected
+    state and setup merely warns (see check_for_ha_ports: "MongoDB container
+    is already running." / "RabbitMQ container is already running."). The
+    port checks need the same signal to avoid failing a healthy running
+    deployment, which is the normal case for an upgrade pre-flight.
+
+    Matches setup's own name matching in utils.fetch_container_info().
+    Probes BOTH runtimes and merges rather than stopping at the first that
+    answers `ps` successfully -- a host can have docker installed (so a
+    docker probe "succeeds" with zero CE containers) while the actual CE
+    deployment runs under podman, or vice versa; stopping at the first
+    responder would silently miss every container the real runtime holds.
+    A service key is absent (not False) when neither runtime could be
+    queried, so a caller can tell "not running" from "couldn't look" with
+    .get(). The dict is never empty -- "management" is always set.
+    """
+    running = {"mongodb": False, "rabbitmq": False, "ui": False}
+    queried = False
+
+    for program in ("docker", "podman"):
+        result = run_command([program, "ps", "--format", "{{.Names}}"])
+        if not result["ok"]:
+            continue
+        queried = True
+        for line in result["stdout"].splitlines():
+            name = line.strip()
+            if not name:
+                continue
+            if "_mongodb-primary" in name:
+                running["mongodb"] = True
+            elif "_rabbitmq-stats" in name:
+                running["rabbitmq"] = True
+            elif "_ui" in name:
+                running["ui"] = True
+
+    result = running if queried else {}
+
+    # The management server is the "cloud-exchange" systemd unit, not a
+    # container, so it's checked independently of whether `ps` answered --
+    # folded into this same dict so management-port reuses the owner-guard.
+    management_result = run_command(
+        ["systemctl", "is-active", "cloud-exchange"])
+    result["management"] = (management_result["ok"]
+                             and management_result["stdout"].strip() == "active")
+
+    return result
+
+
+def openssl_version():
+    result = run_command(["openssl", "version"])
+    return extract_version(result["stdout"]) if result["ok"] else None
+
+
+def venv_python_version(venv_dir):
+    """Read the interpreter version recorded in a venv's pyvenv.cfg."""
+    config = os.path.join(venv_dir, "pyvenv.cfg")
+    try:
+        with open(config) as handle:
+            for line in handle:
+                if line.strip().startswith("version"):
+                    return extract_version(line)
+    except (IOError, OSError):
+        return None
+    return None
+
+
+def setup_python_version():
+    """Version of the interpreter that will run `setup`.
+
+    Both are invoked as `sudo python3 ./<script>`, so this process's own
+    interpreter IS the answer -- no sudo sub-probe needed.
+    """
+    return platform.python_version()
+
+
+def pip_available():
+    """True/False when `python3 -m pip` works, None if it could not be run."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "--version"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (result.stdout.decode("utf-8", "replace")
+              + result.stderr.decode("utf-8", "replace"))
+    return bool(result.returncode == 0
+                and re.search(r"^pip ", output, re.IGNORECASE | re.MULTILINE))
+
+
+def _module_importable(name):
+    """Whether `name` imports under this interpreter -- same test setup uses."""
+    try:
+        __import__(name)
+    except Exception:
+        return False
+    return True
+
+
+def venv_module_available():
+    """True/False -- whether setup will be able to create .cevenv."""
+    return _module_importable("venv")
+
+
+def ensurepip_module_available():
+    """True/False -- whether setup can bootstrap pip inside .cevenv."""
+    return _module_importable("ensurepip")
+
+
+def mgmt_server_process_python_version(unit_name="cloud-exchange", timeout=5):
+    """Version of the interpreter the ALREADY-RUNNING mgmt server uses.
+
+    Distinct from setup_python_version(): that's what a fresh `setup` run
+    would use; this is what the ALREADY-RUNNING service is using, which can
+    lag behind after a PATH/secure_path change until the service restarts.
+
+    Walks to the unit's child process and reads /proc/<pid>/exe directly
+    (root-only, guaranteed by require_root()) rather than shelling out.
+    Returns None (NOT_VERIFIED) if the unit isn't running or the link can't
+    be resolved.
+    """
+    main_pid_result = run_command(
+        ["systemctl", "show", "-p", "MainPID", "--value", unit_name])
+    if not main_pid_result["ok"]:
+        return None
+    main_pid = main_pid_result["stdout"].strip()
+    if not main_pid.isdigit() or main_pid == "0":
+        return None  # unit not running
+
+    child_pid = None
+    child_result = run_command(["pgrep", "-P", main_pid])
+    if child_result["ok"]:
+        for line in child_result["stdout"].splitlines():
+            line = line.strip()
+            if line.isdigit():
+                child_pid = line
+                break
+    pid_to_check = child_pid or main_pid
+
+    try:
+        interpreter = os.path.realpath(
+            os.readlink("/proc/{0}/exe".format(pid_to_check)))
+    except (IOError, OSError):
+        return None
+    if not interpreter or "python" not in os.path.basename(interpreter).lower():
+        return None
+
+    # Run the resolved interpreter directly, not through run_command(): the
+    # real binary (python3.9, python3.11, ...) isn't in ALLOWED_COMMANDS --
+    # that allowlist is sized for manifest commands, not a path from /proc.
+    try:
+        version_result = subprocess.run(
+            [interpreter, "--version"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    output = (version_result.stdout.decode("utf-8", "replace")
+              or version_result.stderr.decode("utf-8", "replace"))
+    return extract_version(output)
+
+
+def is_vm(deployment_dir="."):
+    """True when this host is a CEasVM deployment.
+
+    Mirrors setup's own ce_as_vm_check() (utils.ce_as_vm_check()) exactly:
+    both the marker file AND ce_as_vm_tags.py (in the deployment directory --
+    utils.ce_as_vm_check() itself resolves this relative to setup's own cwd,
+    which setup is documented to be run from) must be present. A marker left
+    over without the tags file is not treated as a VM deployment by setup
+    either, so this must not diverge -- a mismatch here previously let a
+    manifest gate (`no-local-repo-changes`, applies_when.is_vm=[false])
+    wrongly skip setup's local-changes check on a marker-only host.
+    """
+    return (os.path.exists("/.cloud_exchange_vm.marker")
+            and os.path.exists(os.path.join(deployment_dir, "ce_as_vm_tags.py")))
+
+
+def collect(deployment_dir, venv_dir=".cevenv"):
+    """Gather every fact the check engine can reference."""
+    if not os.path.isabs(venv_dir):
+        venv_dir = os.path.join(deployment_dir, venv_dir)
+
+    os_info = os_release()
+
+    return {
+        "cpu_count": cpu_count(),
+        "avx_support": cpu_supports_avx(),
+        "cpu_flags": cpu_flags(),
+        "memory_total_gb": memory_total_gb(),
+        "deployment_dir": deployment_dir,
+        "deployment_disk": disk_usage_gb(deployment_dir),
+        "var_disk": disk_usage_gb("/var"),
+        "os": os_info,
+        "runtime": container_runtime((os_info.get("id") or "").lower()),
+        "running_containers": running_ce_containers(),
+        "openssl_version": openssl_version(),
+        "python_version": platform.python_version(),
+        "venv_python_version": venv_python_version(venv_dir),
+        # Key name kept for older manifest blocks that still reference it.
+        "sudo_python3_version": setup_python_version(),
+        "mgmt_server_process_python_version": mgmt_server_process_python_version(),
+        "is_vm": is_vm(deployment_dir),
+        "pip_available": pip_available(),
+        "venv_module_available": venv_module_available(),
+        "ensurepip_module_available": ensurepip_module_available(),
+    }
+
+# ============================================================================
+# Check engine: entries are data. The _check_* primitives below are the
+# only thing that decides what an entry means -- a manifest can't run code.
+# ============================================================================
+
+# Caps how much of a manifest-named path file_contains reads, so a growing
+# log or non-EOF device node can't exhaust memory or hang the check.
+_MAX_FILE_READ_BYTES = 1 * 1024 * 1024
+
+# Pause before retrying a failed connectivity probe. Long enough for a
+# transient resolver failure to clear, short enough not to stretch a run that
+# performs several of these.
+_HTTP_RETRY_DELAY_SECONDS = 1.0
+
+# Service names as setup prints them, so a warning reads identically.
+_OWNER_LABELS = {"mongodb": "MongoDB", "rabbitmq": "RabbitMQ", "ui": "UI",
+                  "management": "Management service"}
+
+# Peer probes are on a LAN, so a reachable port answers in milliseconds; a
+# long timeout only buys patience for hosts that are down. Kept short because
+# the check fans out over ~28 ports per peer.
+_PEER_PROBE_TIMEOUT_SECONDS = 2
+# Consecutive refusals before declaring the peer itself unreachable and
+# skipping its remaining ports.
+_PEER_GIVE_UP_AFTER = 3
+
+
+def _lookup(facts, dotted):
+    """Resolve 'runtime.runtime_version' against the facts dict."""
+    value = facts
+    for part in str(dotted or "").split("."):
+        if not isinstance(value, dict) or part not in value:
+            return None
+        value = value[part]
+    return value
+
+
+def _label(entry):
+    """The check's human-readable name, with no diagnostic detail attached."""
+    return entry.get("message") or entry.get("id") or entry.get("type")
+
+
+def _message(entry, suffix):
+    """'<check name>: <detail>' -- retained for the JSON report.
+
+    The console renderer shows only the name (format_line() renders the
+    `label` field instead), so operator-facing output never leaks
+    internals like "matched", "no output", or raw command text. The full
+    string still goes into the JSON report, which is the artifact Engineering
+    reads.
+    """
+    return "{0}: {1}".format(_label(entry), suffix)
+
+
+def _check_min_resource(entry, facts, context):
+    actual = _lookup(facts, entry.get("fact"))
+    minimum = entry.get("minimum")
+    if actual is None:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "could not be determined"))
+    # `expected` is the threshold actually applied, not the pre-tolerance
+    # minimum -- otherwise the message and the value column disagree.
+    try:
+        actual_value = float(actual)
+        minimum_value = float(minimum)
+        tolerance = entry.get("tolerance")
+        threshold = minimum_value * float(tolerance) if tolerance else minimum_value
+    except (TypeError, ValueError):
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "malformed threshold in check definition"))
+    if actual_value >= threshold:
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "{0} (minimum {1})".format(actual, threshold)),
+                           actual=actual, expected=threshold)
+    # `warn_on_shortfall` marks an advisory floor -- a support recommendation
+    # rather than a setup gate -- so a shortfall must not block an install.
+    if entry.get("warn_on_shortfall"):
+        return make_result(entry.get("id"), Level.WARN,
+                           _message(entry, "{0} is below the recommended {1}".format(
+                               actual, threshold)),
+                           actual=actual, expected=threshold,
+                           remedy=entry.get("remedy"),
+                           expected_label="recommended")
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0} is below the required {1}".format(
+                           actual, threshold)),
+                       actual=actual, expected=threshold,
+                       remedy=entry.get("remedy"))
+
+
+def _check_cpu_profile(entry, facts, context):
+    """Exact-CPU-count sizing profile, mirroring setup's CE_PROFILING.
+
+    setup keys its sizing table on the EXACT detected CPU count (8 -> Medium,
+    16 -> Large) rather than a floor -- a 12-core host is neither profile and
+    setup fails it outright (see setup.check_prerequisites():
+    `if cpu_cores not in CE_PROFILING: CHECKS["CPU Check"] = Status.FAIL`).
+    A plain `min_resource` minimum of 8 would wrongly PASS a 12-core host
+    that setup rejects, and would use a flat memory/disk floor instead of the
+    profile-specific one (16 CPU requires 28.8 GB RAM / 108 GB disk in
+    setup, not the 8-CPU profile's 14.4 GB / 72 GB).
+
+    Manifest shape:
+        "profiles": [
+            {"name": "Medium", "cpu": 8,  "memory_gb": 16, "disk_gb": 80,  "tolerance": 0.9},
+            {"name": "Large",  "cpu": 16, "memory_gb": 32, "disk_gb": 120, "tolerance": 0.9}
+        ]
+    Adding a future profile (e.g. a 32-CPU tier) is a pure manifest edit --
+    no code change, which is the whole point of keeping this data-driven.
+    """
+    profiles = entry.get("profiles") or []
+    cpu_cores = facts.get("cpu_count")
+    memory_gb = facts.get("memory_total_gb")
+    disk_gb = (facts.get("deployment_disk") or {}).get("total_gb")
+
+    if cpu_cores is None:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "CPU count could not be determined"))
+
+    profile = None
+    for candidate in profiles:
+        if candidate.get("cpu") == cpu_cores:
+            profile = candidate
+            break
+
+    if profile is None:
+        allowed = ", ".join(str(p.get("cpu")) for p in profiles)
+        # "required", not "minimum": this is an exact-membership mismatch,
+        # and cpu_profile's OTHER fail case below is a real floor -- one
+        # `type` can't be both, so set it explicitly here.
+        return make_result(
+            entry.get("id"), Level.FAIL,
+            _message(entry, "{0} CPU cores does not match a supported sizing "
+                            "profile (supported: {1})".format(cpu_cores, allowed)),
+            actual=cpu_cores, expected=allowed, remedy=entry.get("remedy"),
+            expected_label="required")
+
+    tolerance = float(profile.get("tolerance") or 0.9)
+    mem_floor = float(profile.get("memory_gb", 0)) * tolerance
+    disk_floor = float(profile.get("disk_gb", 0)) * tolerance
+    name = profile.get("name") or "{0}-CPU".format(cpu_cores)
+
+    if memory_gb is None:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "memory could not be determined"))
+    if memory_gb < mem_floor:
+        # A real floor, unlike the CPU-mismatch case above -- explicit here
+        # for the same reason: run_check()'s type-keyed backfill can't tell
+        # this apart from that other case since both share `type: cpu_profile`.
+        return make_result(
+            entry.get("id"), Level.FAIL,
+            _message(entry, "{0} GB RAM is below the {1} profile's floor of "
+                            "{2:.1f} GB".format(memory_gb, name, mem_floor)),
+            actual=memory_gb, expected=mem_floor, remedy=entry.get("remedy"),
+            expected_label="minimum")
+
+    if disk_gb is None:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "disk size could not be determined"))
+    if disk_gb < disk_floor:
+        return make_result(
+            entry.get("id"), Level.FAIL,
+            _message(entry, "{0} GB disk is below the {1} profile's floor of "
+                            "{2:.1f} GB".format(disk_gb, name, disk_floor)),
+            actual=disk_gb, expected=disk_floor, remedy=entry.get("remedy"),
+            expected_label="minimum")
+
+    return make_result(
+        entry.get("id"), Level.PASS,
+        _message(entry, "{0} profile ({1} CPU / {2} GB RAM / {3} GB disk)".format(
+            name, cpu_cores, memory_gb, disk_gb)),
+        actual=name, expected=name)
+
+
+def _check_runtime_detected(entry, facts, context):
+    """FAIL when neither Docker nor Podman could be detected on this host.
+
+    Every docker-/podman-specific check (docker-version, podman-version,
+    compose-version, podman-compose-version, podman-plugin-installed) is
+    gated `applies_when.detected_runtime`, so on a host with NO runtime at
+    all every one of them is filtered out by applies() before it ever runs
+    -- zero FAILs, exit 0, even though setup cannot install without a
+    runtime and exits 1 (setup:1499-1529, 3224). This check has no
+    applies_when gate and always runs, so that state is never silently
+    unrepresented.
+    """
+    runtime = (facts.get("runtime") or {}).get("runtime")
+    if runtime:
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "{0} detected".format(runtime)),
+                           actual=runtime, expected="docker or podman")
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "no container runtime detected"),
+                       actual=None, expected="docker or podman",
+                       remedy=entry.get("remedy"))
+
+
+def _check_cpu_flag(entry, facts, context):
+    flag = entry.get("flag")
+    # FAILs, not NOT_VERIFIED: unconfirmed support is not support, and
+    # validate() already rejects this at load time -- fail-closed backstop.
+    if not flag:
+        return make_result(
+            entry.get("id"), Level.FAIL,
+            _message(entry, "no CPU flag was specified, so support could "
+                            "not be confirmed"),
+            actual=None, expected=True, remedy=entry.get("remedy"))
+    flags = facts.get("cpu_flags")
+    if flags is not None:
+        supported = str(flag or "").lower() in flags
+    else:
+        # /proc/cpuinfo couldn't be read for the generic flag set either;
+        # fall back to the original avx-only fact for backward compat.
+        supported = facts.get("avx_support") if flag == "avx" else None
+    if supported is None:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "could not read CPU flags"))
+    if supported:
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "CPU supports {0}".format(flag)),
+                           actual=True, expected=True)
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "CPU does not support {0}".format(flag)),
+                       actual=False, expected=True, remedy=entry.get("remedy"))
+
+
+def _check_bool_fact(entry, facts, context):
+    """A plain True/False/None fact -- FAIL/PASS/NOT_VERIFIED respectively.
+
+    Used for availability facts with no threshold or version to compare
+    (pip/venv/ensurepip module availability). None means the fact could not
+    be determined (e.g. no passwordless sudo to probe with), not that the
+    thing is missing -- so it is NOT_VERIFIED, never a silent PASS.
+    """
+    value = _lookup(facts, entry.get("fact"))
+    if value is None:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "could not be determined"))
+    if value:
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "available"), actual=True, expected=True)
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "not available"),
+                       actual=False, expected=True, remedy=entry.get("remedy"))
+
+
+def _check_version_min(entry, facts, context):
+    actual = _lookup(facts, entry.get("fact"))
+    minimum = entry.get("minimum")
+    recommended = entry.get("recommended")
+    if not actual:
+        # setup treats some of these as hard failures, not "couldn't check"
+        # (Podman trio, openssl). `fail_if_missing` opts a manifest entry
+        # into that, without changing every other check's NOT_VERIFIED default.
+        if entry.get("fail_if_missing"):
+            return make_result(entry.get("id"), Level.FAIL,
+                               _message(entry, "version could not be determined"),
+                               remedy=entry.get("remedy"))
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "version could not be determined"))
+    try:
+        if minimum and compare_versions(actual, minimum) < 0:
+            return make_result(entry.get("id"), Level.FAIL,
+                               _message(entry, "{0} is below the minimum {1}".format(
+                                   actual, minimum)),
+                               actual=actual, expected=minimum,
+                               remedy=entry.get("remedy"))
+        if recommended and compare_versions(actual, recommended) < 0:
+            return make_result(entry.get("id"), Level.WARN,
+                               _message(entry, "{0} is below the recommended {1}".format(
+                                   actual, recommended)),
+                               actual=actual, expected=recommended,
+                               remedy=entry.get("remedy"))
+    except ValueError:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "unparseable version {0!r}".format(actual)))
+    return make_result(entry.get("id"), Level.PASS,
+                       _message(entry, str(actual)), actual=actual,
+                       expected=recommended or minimum)
+
+
+def _check_version_recommended(entry, facts, context):
+    """Like _check_version_min, but a shortfall is always a WARN, never a
+    FAIL -- even if the manifest entry used a `minimum` key instead of
+    `recommended`. "Recommended" checks must never block an install."""
+    result = _check_version_min(entry, facts, context)
+    if result.get("level") == Level.FAIL:
+        result["level"] = Level.WARN
+    return result
+
+
+def _check_os_supported(entry, facts, context):
+    """OS allowlist, gated by exact major version like setup itself.
+
+    setup accepts only Ubuntu 24 and RHEL 9 as major versions -- an open-
+    ended "minimum" alone would wrongly pass Ubuntu 26.04 or RHEL 10.0,
+    which setup rejects outright (utils.RECOMMENDED_HOST_OS is an EXACT
+    membership test against "Ubuntu {major}"/"RHEL {major}", not a floor;
+    see setup:2736-2762). `majors`, when present on an `allowed[]` entry,
+    is that same exact-membership gate; `minimum` remains the finer-grained
+    floor applied only after the major is already accepted (so RHEL 9.4 is
+    still rejected under RHEL's `majors: ["9"]`).
+    """
+    detected = facts.get("os") or {}
+    os_id = (detected.get("id") or "").lower()
+    version_id = detected.get("version_id")
+    pretty = detected.get("pretty_name") or "unknown OS"
+    allowed = entry.get("allowed") or []
+
+    if not os_id:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "could not read /etc/os-release"))
+
+    # No `minimum` means any version of that distro passes (CE 5.1.2's setup
+    # never fails Ubuntu/RHEL on version alone) -- describe it without a
+    # bound instead of rendering "ubuntu None+".
+    def _describe(item):
+        if item.get("minimum"):
+            return "{0} {1}+".format(item.get("id"), item.get("minimum"))
+        return "{0} (any version)".format(item.get("id"))
+
+    expected = ", ".join(_describe(item) for item in allowed)
+    major = str(version_id).split(".")[0] if version_id else None
+
+    # A distro may appear more than once with different majors/minimum
+    # pairs (e.g. "22.04+ or 24.04+"), so a mismatch falls through to the
+    # next candidate instead of failing on the first matching distro id.
+    matched_distro = False
+    for item in allowed:
+        candidates = [str(item.get("id", "")).lower()]
+        candidates.extend(str(alias).lower() for alias in item.get("aliases", []))
+        if os_id not in candidates:
+            continue
+        matched_distro = True
+        majors = item.get("majors")
+        if majors and (major is None or major not in [str(m) for m in majors]):
+            continue
+        minimum = item.get("minimum")
+        if not minimum or not version_id:
+            return make_result(entry.get("id"), Level.PASS,
+                               _message(entry, pretty), actual=pretty, expected=expected)
+        try:
+            if compare_versions(version_id, minimum) < 0:
+                continue
+        except ValueError:
+            return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                               _message(entry, "unparseable OS version"))
+        return make_result(entry.get("id"), Level.PASS, _message(entry, pretty),
+                           actual=pretty, expected=expected)
+
+    # Supported family, bad version: setup 5.1.2 only warns (its `allow`
+    # flag), 7.0.0 fails. Default FAIL; a bad family is always fatal.
+    if matched_distro:
+        if entry.get("warn_on_version_mismatch"):
+            # Explicit: this primitive's two non-PASS cases read differently
+            # ("recommended" here, "required" for an unsupported family).
+            return make_result(
+                entry.get("id"), Level.WARN,
+                _message(entry, "{0} is not a tested OS version".format(pretty)),
+                actual=pretty, expected=expected, remedy=entry.get("remedy"),
+                expected_label="recommended")
+        return make_result(
+            entry.get("id"), Level.FAIL,
+            _message(entry, "{0} is not a supported OS version".format(pretty)),
+            actual=pretty, expected=expected, remedy=entry.get("remedy"))
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0} is not a supported OS".format(pretty)),
+                       actual=pretty, expected=expected, remedy=entry.get("remedy"))
+
+
+def _check_path_exists(entry, facts, context):
+    path = entry.get("path")
+    if os.path.exists(path):
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "{0} exists".format(path)), actual=path)
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0} is missing".format(path)),
+                       actual=None, expected=path, remedy=entry.get("remedy"))
+
+
+def _check_file_contains(entry, facts, context):
+    path = entry.get("path")
+    # validate() requires a non-empty needle (an empty one is a substring of
+    # everything); guarded again here as a fail-closed backstop.
+    needle = entry.get("needle")
+    if not needle:
+        return make_result(
+            entry.get("id"), Level.NOT_VERIFIED,
+            _message(entry, "no search text specified in the check definition"))
+    needle = str(needle)
+    try:
+        # Only ever read a REGULAR file: open() on a writer-less FIFO blocks
+        # indefinitely before the byte cap can help, and three
+        # ALLOWED_PATH_PREFIXES entries are directories admitting any
+        # subpath. lstat, not stat, so a symlink to a FIFO is caught too.
+        mode = os.lstat(path).st_mode
+        if not stat.S_ISREG(mode):
+            return make_result(
+                entry.get("id"), Level.NOT_VERIFIED,
+                _message(entry, "{0} is not a regular file".format(path)))
+        with open(path) as handle:
+            content = handle.read(_MAX_FILE_READ_BYTES)
+    except (IOError, OSError):
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "could not read {0}".format(path)))
+    if needle.lower() in content.lower():
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "found {0!r} in {1}".format(needle, path)))
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0!r} not found in {1}".format(needle, path)),
+                       remedy=entry.get("remedy"))
+
+
+def _check_file_absent(entry, facts, context):
+    path = entry.get("path")
+    if not os.path.exists(path):
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "{0} is absent".format(path)))
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0} should not be present".format(path)),
+                       remedy=entry.get("remedy"))
+
+
+def _check_command_matches(entry, facts, context):
+    command = entry.get("command") or []
+    result = run_command(command, timeout=entry.get("timeout", 15))
+    if not result["ok"] and result["returncode"] is None:
+        # Refused by the allowlist or failed to launch.
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "not run ({0})".format(result["error"])))
+    pattern = entry.get("pattern")
+    haystack = (result["stdout"] or "") + (result["stderr"] or "")
+    if pattern and re.search(pattern, haystack, re.IGNORECASE | re.MULTILINE):
+        return make_result(entry.get("id"), Level.PASS, _message(entry, "matched"))
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "expected output not found"),
+                       expected=pattern, remedy=entry.get("remedy"))
+
+
+def _check_command_output_empty(entry, facts, context):
+    """PASS only when the command's combined stdout+stderr is empty.
+
+    This is the inverse of _check_command_matches's pass condition
+    (matched output = healthy there; empty output = healthy here), which
+    is why it's a separate primitive rather than an inverted flag on
+    command_matches -- one primitive should express one pass/fail
+    philosophy. Used for e.g. `git diff -G.`, matching setup's own
+    pull_from_github() guard: any diff output means local changes exist
+    and the customer should not proceed.
+    """
+    command = entry.get("command") or []
+    cwd = entry.get("cwd")
+    if cwd:
+        cwd = cwd.replace("{deployment_dir}", str(facts.get("deployment_dir") or ""))
+    env = None
+    if cwd and command and os.path.basename(str(command[0])) == "git":
+        # Mirrors setup's pull_from_github(): pin GIT_DIR/GIT_WORK_TREE and
+        # force LC_ALL=C so git's output isn't locale-dependent.
+        env = {"GIT_DIR": os.path.join(cwd, ".git"), "GIT_WORK_TREE": cwd,
+               "LC_ALL": "C"}
+    result = run_command(command, timeout=entry.get("timeout", 15), cwd=cwd, env=env)
+    if not result["ok"] and result["returncode"] is None:
+        # Refused by the allowlist, missing binary, or bad cwd.
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "not run ({0})".format(result["error"])))
+
+    # Judge stdout only, like setup's pull_from_github(). A non-zero exit
+    # means git never produced a verdict, so that's NOT_VERIFIED rather than
+    # PASS -- an empty stdout there is not the same as "no local changes".
+    if result["returncode"] != 0:
+        detail = (result["stderr"] or "").strip().splitlines()
+        return make_result(
+            entry.get("id"), Level.NOT_VERIFIED,
+            _message(entry, "could not be determined ({0})".format(
+                detail[0] if detail else "command failed")),
+            remedy=entry.get("remedy"))
+
+    if not (result["stdout"] or "").strip():
+        return make_result(entry.get("id"), Level.PASS, _message(entry, "no output"))
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "unexpected output was produced"),
+                       actual=result["stdout"], remedy=entry.get("remedy"))
+
+
+def _probe_port(host, port, timeout):
+    """True when something is LISTENING on host:port."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        return sock.connect_ex((host, int(port))) == 0
+    finally:
+        sock.close()
+
+
+def _probe_host_reachable(host, port, timeout):
+    """True when host:port is reachable, EVEN IF nothing is listening.
+
+    Matches setup's check_port_for_ha(): a refused connection means the
+    host answered, so on a fresh HA cluster (nothing listening yet) this
+    still passes where a listening-only probe would fail every peer port.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.settimeout(timeout)
+    try:
+        sock.connect((host, int(port)))
+        return True  # something is listening
+    except socket.timeout:
+        return False  # dropped by a firewall, or the host is down
+    except ConnectionRefusedError:
+        return True  # the host answered; nothing is bound to this port yet
+    except (socket.error, OSError, ValueError):
+        return False  # no route, DNS failure, bad port
+    finally:
+        sock.close()
+
+
+def _check_port_free(entry, facts, context):
+    """A busy port is only a failure when nothing of ours is holding it.
+
+    Mirrors setup's check_for_ha_ports(): a port in use by an
+    already-running CE container is the EXPECTED state on any host that is
+    already deployed -- setup prints "MongoDB container is already running."
+    and carries on. Failing there would fail every HA upgrade pre-flight on
+    a healthy cluster, which is exactly the case this tool exists to bless.
+
+    Two manifest keys drive that:
+      `owner`  -- the CE service that legitimately holds this port
+                  ("mongodb"/"rabbitmq"). When its container is up, a busy
+                  port is a WARN, not a FAIL.
+      `shared` -- the port may be held by a co-operating service that is not
+                  a CE container at all (GlusterFS), so being in use is
+                  never a failure; setup only asks the operator to confirm
+                  what is holding it.
+    """
+    port = entry.get("port")
+    in_use = _probe_port("127.0.0.1", port, entry.get("timeout", 3))
+    if not in_use:
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "port {0} is available".format(port)),
+                           actual=None, expected=None)
+
+    if entry.get("shared"):
+        return make_result(
+            entry.get("id"), Level.WARN,
+            _message(entry, "port {0} is already in use, make sure it's being "
+                            "used by {1}".format(
+                                port, entry.get("shared"))),
+            actual=None, expected=None, remedy=entry.get("remedy"))
+
+    owner = entry.get("owner")
+    running = facts.get("running_containers") or {}
+    if owner and running.get(owner):
+        return make_result(
+            entry.get("id"), Level.WARN,
+            _message(entry, "{0} container is already running".format(
+                _OWNER_LABELS.get(owner, owner))),
+            actual=None, expected=None)
+
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "port {0} is already in use".format(port)),
+                       actual=None, expected=None,
+                       remedy=entry.get("remedy"))
+
+
+def _check_port_reachable(entry, facts, context):
+    """DNS + TCP reachability of a host:port.
+
+    Used for OS package mirrors, which are served over plain HTTP and so
+    cannot go through http_reachable -- that primitive refuses non-HTTPS
+    URLs by design, and relaxing it would weaken every connectivity check
+    to gain nothing here. Reaching the mirror's port is the question that
+    matters: the deep package URLs those repos serve change with every
+    point release, so probing one would fail for reasons that have nothing
+    to do with the customer's network.
+    """
+    host = entry.get("host")
+    port = entry.get("port", 80)
+    if not host:
+        return make_result(entry.get("id"), Level.SKIP,
+                           _message(entry, "no host provided"))
+    if _probe_port(host, port, entry.get("timeout", 5)):
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "{0}:{1} is reachable".format(host, port)),
+                           actual=None, expected=None)
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0}:{1} is not reachable".format(host, port)),
+                       actual=None, expected=None,
+                       remedy=entry.get("remedy"))
+
+
+def _check_port_range_free(entry, facts, context):
+    """One result for a contiguous range of ports.
+
+    GlusterFS reserves 24009-24029 for bricks. Emitting one check per port
+    produced 21 near-identical rows that buried everything else in the
+    report -- the operator wants "is the brick range clear", not a line per
+    port. Reports the specific ports in use so the answer is still
+    actionable.
+
+    Like `port_free`, a `shared` range never fails: setup only asks the
+    operator to confirm the co-operating service owns them.
+    """
+    start = entry.get("port_start")
+    end = entry.get("port_end")
+    if start is None or end is None:
+        return make_result(entry.get("id"), Level.SKIP,
+                           _message(entry, "no port range provided"))
+
+    timeout = entry.get("timeout", 1)
+    in_use = [port for port in range(int(start), int(end) + 1)
+              if _probe_port("127.0.0.1", port, timeout)]
+
+    if not in_use:
+        return make_result(
+            entry.get("id"), Level.PASS,
+            _message(entry, "ports {0}-{1} are available".format(start, end)),
+            actual=None, expected=None)
+
+    listed = ", ".join(str(port) for port in in_use[:8])
+    if len(in_use) > 8:
+        listed = "{0} and {1} more".format(listed, len(in_use) - 8)
+
+    if entry.get("shared"):
+        return make_result(
+            entry.get("id"), Level.WARN,
+            _message(entry, "in use: {0} -- make sure they are being used by "
+                            "{1}".format(listed, entry.get("shared"))),
+            actual=None, expected=None, remedy=entry.get("remedy"))
+
+    return make_result(
+        entry.get("id"), Level.FAIL,
+        _message(entry, "already in use: {0}".format(listed)),
+        actual=None, expected=None, remedy=entry.get("remedy"))
+
+
+def _check_ha_peer_ports(entry, facts, context):
+    """Every peer node's HA ports must be reachable from this node.
+
+    Mirrors setup's cross-node loop in check_for_ha_ports(), which probes
+    each port on every OTHER node in HA_IP_LIST and fails with "Please ensure
+    all HA nodes are reachable from each other." if any is unreachable.
+
+    The peer list is a runtime value (HA_IP_LIST), not something a manifest
+    can enumerate, so this primitive fans out itself over the `ha_nodes`
+    fact. One result covers the whole matrix: a per-peer-per-port entry would
+    add ~27 rows per peer and bury the answer the operator actually wants,
+    which is "can these nodes talk to each other".
+    """
+    nodes = facts.get("ha_nodes") or []
+    current = facts.get("ha_current_node")
+    peers = [node for node in nodes if node != current]
+    if not peers:
+        return make_result(
+            entry.get("id"), Level.SKIP,
+            _message(entry, "no peer nodes are configured"))
+
+    ports = entry.get("ports") or []
+    if not ports:
+        # Fail-closed backstop -- validate() already rejects an empty list.
+        return make_result(
+            entry.get("id"), Level.NOT_VERIFIED,
+            _message(entry, "no ports specified in the check definition"))
+    timeout = entry.get("timeout", _PEER_PROBE_TIMEOUT_SECONDS)
+    unreachable = []
+    checked = 0
+    for peer in peers:
+        # A firewalled peer blocks EVERY port; probing all ~28 at a multi-
+        # second timeout each would stall the run for minutes. Give up after
+        # a few consecutive failures and report the peer unreachable instead.
+        consecutive_failures = 0
+        for port in ports:
+            checked += 1
+            if _probe_host_reachable(peer, port, timeout):
+                consecutive_failures = 0
+                continue
+            unreachable.append("{0}:{1}".format(peer, port))
+            consecutive_failures += 1
+            if consecutive_failures >= _PEER_GIVE_UP_AFTER:
+                unreachable.append("{0}: node appears unreachable".format(peer))
+                break
+
+    if unreachable:
+        shown = ", ".join(unreachable[:6])
+        if len(unreachable) > 6:
+            shown = "{0} and {1} more".format(shown, len(unreachable) - 6)
+        return make_result(
+            entry.get("id"), Level.FAIL,
+            _message(entry, "not reachable from {0}: {1}".format(
+                current or "this node", shown)),
+            actual=None, expected=None,
+            remedy=entry.get("remedy"))
+
+    return make_result(
+        entry.get("id"), Level.PASS,
+        _message(entry, "all {0} peer port(s) reachable".format(checked)),
+        actual=None, expected=None)
+
+
+def _check_http_reachable(entry, facts, context):
+    url = entry.get("url")
+    timeout = entry.get("timeout", 30)
+    proxy = context.get("https_proxy")
+
+    # Retry a transport failure once -- a transient DNS hiccup was observed
+    # intermittently failing a healthy host. Only a transport failure is
+    # retried; any HTTP status already proves the whole stack worked.
+    response = http_get(url, timeout=timeout, proxy=proxy)
+    if not response["ok"] and response["status"] is None:
+        time.sleep(_HTTP_RETRY_DELAY_SECONDS)
+        response = http_get(url, timeout=timeout, proxy=proxy)
+
+    # Any HTTP status code proves DNS + TCP + TLS + HTTP all worked. Registry
+    # endpoints legitimately answer 401/404; only a transport failure (no
+    # status at all) means the host is actually unreachable.
+    if response["ok"] or response["status"] is not None:
+        # No HTTP status shown here -- a 401/404 still proves the stack
+        # worked, and showing it next to PASS just invites confusion.
+        return make_result(entry.get("id"), Level.PASS,
+                           _message(entry, "{0} is reachable (HTTP {1})".format(
+                               url, response["status"])),
+                           actual=None, expected=None)
+    return make_result(entry.get("id"), Level.FAIL,
+                       _message(entry, "{0} is not reachable ({1})".format(
+                           url, response["error"])),
+                       actual=None, expected=None,
+                       remedy=entry.get("remedy"))
+
+
+def _check_python_version_drift(entry, facts, context):
+    actual = _lookup(facts, entry.get("fact"))
+    minimum = entry.get("minimum")
+    if not actual:
+        # NOT_VERIFIED, not SKIP: SKIP means "not applicable", not "failed
+        # to measure" -- it previously misreported a management server that
+        # simply couldn't be resolved as one that didn't exist.
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "could not be determined"))
+    try:
+        below = compare_versions(actual, minimum) < 0
+    except ValueError:
+        return make_result(entry.get("id"), Level.NOT_VERIFIED,
+                           _message(entry, "unparseable version {0!r}".format(actual)))
+    if below:
+        return make_result(entry.get("id"), Level.WARN,
+                           _message(entry, "{0} is below the required {1}".format(
+                               actual, minimum)),
+                           actual=actual, expected=minimum,
+                           remedy=entry.get("remedy"))
+    return make_result(entry.get("id"), Level.PASS,
+                       _message(entry, str(actual)), actual=actual, expected=minimum)
+
+
+PRIMITIVES = {
+    "min_resource": _check_min_resource,
+    "cpu_profile": _check_cpu_profile,
+    "runtime_detected": _check_runtime_detected,
+    "cpu_flag": _check_cpu_flag,
+    "bool_fact": _check_bool_fact,
+    "version_min": _check_version_min,
+    "version_recommended": _check_version_recommended,
+    "os_supported": _check_os_supported,
+    "path_exists": _check_path_exists,
+    "file_contains": _check_file_contains,
+    "file_absent": _check_file_absent,
+    "command_matches": _check_command_matches,
+    "command_output_empty": _check_command_output_empty,
+    "port_free": _check_port_free,
+    "port_range_free": _check_port_range_free,
+    "port_reachable": _check_port_reachable,
+    "ha_peer_ports": _check_ha_peer_ports,
+    "http_reachable": _check_http_reachable,
+    "python_version_drift": _check_python_version_drift,
+}
+
+
+def applies(entry, context):
+    """True when an entry's applies_when gate matches the run context."""
+    gate = entry.get("applies_when") or {}
+    for key, allowed in gate.items():
+        if not isinstance(allowed, (list, tuple)):
+            allowed = [allowed]
+        if context.get(key) not in allowed:
+            return False
+    return True
+
+
+def run_check(entry, facts, context):
+    """Run one entry, converting any surprise into NOT_VERIFIED."""
+    handler = PRIMITIVES.get(entry.get("type"))
+    if handler is None:
+        return make_result(
+            entry.get("id"), Level.NOT_VERIFIED,
+            "{0}: check type {1!r} requires a newer health-check script".format(
+                _label(entry), entry.get("type")),
+            label=_label(entry), check_type=entry.get("type"),
+            category=category_for(entry.get("type")),
+        )
+    try:
+        result = handler(entry, facts, context)
+    except Exception as error:  # a bad entry must never abort the run
+        # Worded as a tool defect, not a host condition, so it isn't
+        # mistaken for something the operator should go fix.
+        return make_result(
+            entry.get("id"), Level.NOT_VERIFIED,
+            "{0}: internal error in the health check ({1}: {2})".format(
+                _label(entry), type(error).__name__, error),
+            label=_label(entry),
+            check_type=entry.get("type"),
+            category=category_for(entry.get("type")),
+            remedy="This is a defect in the health check itself, not a "
+                   "problem with this host. Please report it to Netskope "
+                   "Support with the JSON report attached.")
+    # Set centrally rather than in all 40+ make_result() call sites: every
+    # primitive's label, type and group are the same function of its entry.
+    if isinstance(result, dict):
+        if not result.get("label"):
+            result["label"] = _label(entry)
+        if not result.get("type"):
+            result["type"] = entry.get("type")
+        if not result.get("category"):
+            result["category"] = category_for(entry.get("type"))
+        # setup aborts on "couldn't verify" for a few checks (e.g. Podman);
+        # not_verified_is_fatal lets a manifest entry opt into that.
+        if (result.get("level") == Level.NOT_VERIFIED
+                and entry.get("not_verified_is_fatal")):
+            result["level"] = Level.FAIL
+            if not result.get("remedy"):
+                result["remedy"] = entry.get("remedy")
+        if "expected_label" not in result:
+            # Backfilled from type/level, same as label/type/category --
+            # cpu_profile sets it explicitly per call site instead, since
+            # its FAIL cases need different labels.
+            result["expected_label"] = _default_expected_label(
+                entry.get("type"), result.get("level"))
+    return result
+
+
+def run_all(entries, facts, context):
+    """Context-gate, then run every applicable entry.
+
+    Which CE versions a check applies to is already decided by which
+    version's block it lives in (see _resolve_checks()) -- there is no
+    separate per-entry version gate here.
+    """
+    results = []
+    for entry in entries:
+        if not applies(entry, context):
+            continue
+        results.append(run_check(entry, facts, context))
+    return results
+
+# ============================================================================
+# The check manifest: fetch, validate, or fail. Data only, never code --
+# fetched over verified HTTPS from a pinned host; a manifest that fails
+# schema validation is rejected outright, with no bundled fallback.
+# ============================================================================
+
+MANIFEST_URL = (
+    "https://raw.githubusercontent.com/netskopeoss/ta_cloud_exchange/refs/heads/beta/checks_manifest.json"
+)
+
+# The fetched manifest drives every command/probe this script runs, as
+# root, so --manifest-url is pinned to a host allowlist. --manifest-path is
+# unrestricted -- a local file the operator controls isn't a network risk.
+ALLOWED_MANIFEST_HOSTS = frozenset([
+    "raw.githubusercontent.com",
+])
+
+def manifest_host_rejection(manifest_url):
+    """Why `manifest_url`'s host is not allowlisted, or None if it is."""
+    host = urllib.parse.urlsplit(manifest_url).hostname or ""
+    if host.lower() in ALLOWED_MANIFEST_HOSTS:
+        return None
+    return "manifest host {0!r} is not allowlisted; only {1} is permitted".format(
+        host, ", ".join(sorted(ALLOWED_MANIFEST_HOSTS)))
+
+
+MAX_MANIFEST_BYTES = 512 * 1024
+MAX_CHECKS = 500
+MAX_STRING_LENGTH = 2048
+
+# Bounds on the WORK one entry may request (MAX_CHECKS only bounds how
+# many entries there are) -- a full port sweep or a 24h timeout is one entry.
+MAX_PATTERN_LENGTH = 256
+MAX_PORT_RANGE_WIDTH = 256
+MAX_PEER_PORTS = 64
+MAX_TIMEOUT_SECONDS = 120
+_MIN_PORT = 1
+_MAX_PORT = 65535
+
+# A typo'd applies_when key used to validate cleanly and silently drop the
+# check from every run with no warning -- keys and values are checked now.
+_APPLIES_WHEN_DOMAINS = {
+    "mode": frozenset(["install", "upgrade", "migrate"]),
+    "deployment": frozenset(["SA", "HA"]),
+    "detected_runtime": frozenset(["docker", "podman"]),
+    "is_vm": frozenset([True, False]),
+    "os_id": None,  # free-form: whatever /etc/os-release ID reports
+}
+
+# Per-primitive required fields -- four omissions here used to be a silent
+# PASS (needle, ports, version_min's minimum, os_supported's minimum).
+_REQUIRED_FIELDS = {
+    "min_resource": ("fact", "minimum"),
+    "cpu_profile": ("profiles",),
+    "cpu_flag": ("flag",),
+    "bool_fact": ("fact",),
+    "os_supported": ("allowed",),
+    "path_exists": ("path",),
+    "file_absent": ("path",),
+    "file_contains": ("path", "needle"),
+    "command_matches": ("command", "pattern"),
+    "command_output_empty": ("command",),
+    "port_free": ("port",),
+    "port_reachable": ("host",),
+    "port_range_free": ("port_start", "port_end"),
+    "ha_peer_ports": ("ports",),
+    "http_reachable": ("url",),
+    "python_version_drift": ("fact", "minimum"),
+    "runtime_detected": (),
+}
+
+_ALLOWED_TOP_LEVEL = frozenset(["schema_version", "manifest_version", "checks",
+                                "versions", "docs", "default_version"])
+_ALLOWED_CHECK_KEYS = frozenset([
+    "id", "type", "message", "remedy", "applies_when",
+    "fact", "minimum", "recommended", "tolerance", "flag", "allowed",
+    "path", "needle", "command", "pattern", "port", "host", "url", "timeout",
+    "cwd", "owner", "shared", "ports", "port_start", "port_end", "profiles",
+    "fail_if_missing", "not_verified_is_fatal",
+    "warn_on_version_mismatch", "warn_on_shortfall",
+])
+_ALLOWED_VERSION_KEYS = frozenset(["checks", "docs"])
+_ALLOWED_DOCS_MODES = frozenset(["install", "upgrade", "migrate"])
+SUPPORTED_SCHEMA_VERSIONS = (1,)
+
+# path_exists/file_contains/file_absent may only touch a path under one of
+# these fixed, absolute prefixes -- same idea as ALLOWED_COMMANDS for
+# command_matches. No deployment-dir-relative entry on purpose: that dir
+# isn't known at manifest-authoring time, so it belongs in collect() as a
+# dedicated fact (see venv_python_version) instead.
+ALLOWED_PATH_PREFIXES = (
+    "/etc/os-release",
+    "/etc/redhat-release",
+    "/etc/selinux/config",
+    "/proc/cpuinfo",
+    "/proc/meminfo",
+    "/var/lib/rabbitmq",
+    "/var/lib/docker",
+    "/var/lib/containers",
+)
+# Validation decides WHICH paths are reachable; _MAX_FILE_READ_BYTES (in
+# _check_file_contains) is the independent second guard on how much of one.
+
+
+# --------------------------------------------------------------------------
+# Schema validation
+# --------------------------------------------------------------------------
+
+def _validate_strings(entry, errors, _value=None, _path=None):
+    """Cap every string, including nested ones (profiles[], allowed[])."""
+    if _value is None:
+        _value, _path = entry, ""
+    if isinstance(_value, dict):
+        for key, value in _value.items():
+            _validate_strings(entry, errors, value,
+                              "{0}.{1}".format(_path, key) if _path else str(key))
+    elif isinstance(_value, (list, tuple)):
+        for index, value in enumerate(_value):
+            _validate_strings(entry, errors, value,
+                              "{0}[{1}]".format(_path, index))
+    elif isinstance(_value, str) and len(_value) > MAX_STRING_LENGTH:
+        errors.append("check {0!r}: field {1!r} is too long".format(
+            entry.get("id"), _path))
+
+
+def _validate_port(value, where, errors, what="port"):
+    if not isinstance(value, int) or isinstance(value, bool):
+        errors.append("{0}: {1} must be an integer".format(where, what))
+        return False
+    if not (_MIN_PORT <= value <= _MAX_PORT):
+        errors.append("{0}: {1} {2} is outside 1-65535".format(
+            where, what, value))
+        return False
+    return True
+
+
+def _validate_timeout(entry, where, errors):
+    timeout = entry.get("timeout")
+    if timeout is None:
+        return
+    if not isinstance(timeout, (int, float)) or isinstance(timeout, bool):
+        errors.append("{0}: timeout must be a number".format(where))
+    elif not (0 < timeout <= MAX_TIMEOUT_SECONDS):
+        errors.append("{0}: timeout {1} is outside 0-{2}s".format(
+            where, timeout, MAX_TIMEOUT_SECONDS))
+
+
+def _validate_applies_when(entry, where, errors):
+    """Reject an unrecognised gate key or an out-of-domain value -- both
+    used to silently drop the check from every run instead of erroring."""
+    gate = entry.get("applies_when")
+    if gate is None:
+        return
+    if not isinstance(gate, dict):
+        errors.append("{0}: applies_when must be an object".format(where))
+        return
+    for key, allowed in gate.items():
+        if key not in _APPLIES_WHEN_DOMAINS:
+            errors.append(
+                "{0}: applies_when has unknown key {1!r} (known: {2})".format(
+                    where, key, sorted(_APPLIES_WHEN_DOMAINS)))
+            continue
+        domain = _APPLIES_WHEN_DOMAINS[key]
+        values = allowed if isinstance(allowed, (list, tuple)) else [allowed]
+        if not values:
+            errors.append(
+                "{0}: applies_when[{1!r}] must not be empty".format(where, key))
+        for value in values:
+            if domain is None:
+                if not isinstance(value, str) or not value:
+                    errors.append(
+                        "{0}: applies_when[{1!r}] values must be non-empty "
+                        "strings".format(where, key))
+                elif value != value.lower():
+                    # os_id is matched lowercased; uppercase would never match.
+                    errors.append(
+                        "{0}: applies_when[{1!r}] value {2!r} must be "
+                        "lowercase".format(where, key, value))
+                continue
+            # `in` on a frozenset of booleans would accept 0/1 too, so
+            # compare types as well for the boolean domain.
+            if key == "is_vm":
+                if not isinstance(value, bool):
+                    errors.append(
+                        "{0}: applies_when['is_vm'] values must be true or "
+                        "false, not {1!r}".format(where, value))
+                continue
+            if value not in domain:
+                errors.append(
+                    "{0}: applies_when[{1!r}] value {2!r} is not one of "
+                    "{3}".format(where, key, value, sorted(domain)))
+
+
+def _validate_check(entry, errors):
+    if not isinstance(entry, dict):
+        errors.append("check entries must be objects")
+        return
+    for required in ("id", "type", "message"):
+        if not entry.get(required):
+            errors.append("check {0!r}: missing required field {1!r}".format(
+                entry.get("id", "<no id>"), required))
+    where = "check {0!r}".format(entry.get("id"))
+
+    # Unknown type is NOT a manifest error: shipping a new primitive would
+    # otherwise break every already-deployed older script. run_check()
+    # already renders it as NOT_VERIFIED; skip further validation for it.
+    if entry.get("type") not in PRIMITIVES:
+        return
+
+    unknown = set(entry) - _ALLOWED_CHECK_KEYS
+    if unknown:
+        errors.append("check {0!r}: unknown keys {1}".format(
+            entry.get("id"), sorted(unknown)))
+
+    for field in _REQUIRED_FIELDS.get(entry.get("type"), ()):
+        value = entry.get(field)
+        if value is None or value == "" or value == [] or value == {}:
+            errors.append(
+                "{0}: {1} requires a non-empty {2!r}".format(
+                    where, entry.get("type"), field))
+
+    # version_min / version_recommended need at least one bound. With
+    # neither, _check_version_min skips both comparisons and returns PASS
+    # for any version at all -- OpenSSL 1.0.2 included.
+    if entry.get("type") in ("version_min", "version_recommended"):
+        if not entry.get("fact"):
+            errors.append("{0}: requires a non-empty 'fact'".format(where))
+        if not entry.get("minimum") and not entry.get("recommended"):
+            errors.append(
+                "{0}: requires 'minimum' or 'recommended'".format(where))
+
+    _validate_applies_when(entry, where, errors)
+    _validate_timeout(entry, where, errors)
+    # Every primitive that shells out gets the same gate. command_output_empty
+    # was previously omitted here, so its `command` reached run_command
+    # unvalidated by the schema.
+    if entry.get("type") in ("command_matches", "command_output_empty"):
+        command = entry.get("command")
+        if not isinstance(command, list) or not command:
+            errors.append("check {0!r}: command must be a non-empty list".format(
+                entry.get("id")))
+        else:
+            # Same rule run_command() enforces, so the two gates can't drift.
+            refusal = check_argv_allowed(command)
+            if refusal is not None:
+                errors.append("check {0!r}: {1}".format(
+                    entry.get("id"), refusal))
+        # cwd only ever needs to point at the deployment dir; pinning the
+        # exact placeholder (not any manifest string) keeps it from naming
+        # an arbitrary directory.
+        cwd = entry.get("cwd")
+        if cwd is not None and cwd != "{deployment_dir}":
+            errors.append(
+                "check {0!r}: cwd must be exactly '{{deployment_dir}}'".format(
+                    entry.get("id")))
+    if entry.get("type") == "cpu_profile":
+        profiles = entry.get("profiles")
+        if not isinstance(profiles, list) or not profiles:
+            errors.append(
+                "check {0!r}: profiles must be a non-empty list".format(
+                    entry.get("id")))
+        else:
+            for profile in profiles:
+                if not isinstance(profile, dict):
+                    errors.append(
+                        "check {0!r}: each profile must be an object".format(
+                            entry.get("id")))
+                    continue
+                for required_key in ("cpu", "memory_gb", "disk_gb"):
+                    if not isinstance(profile.get(required_key), (int, float)):
+                        errors.append(
+                            "check {0!r}: profile {1!r} missing numeric "
+                            "{2!r}".format(entry.get("id"), profile.get("name"),
+                                          required_key))
+    if entry.get("type") in ("port_free", "port_reachable"):
+        _validate_port(entry.get("port", 80 if entry.get("type") ==
+                                 "port_reachable" else None), where, errors)
+    if entry.get("type") == "port_range_free":
+        start, end = entry.get("port_start"), entry.get("port_end")
+        if _validate_port(start, where, errors, "port_start") and \
+                _validate_port(end, where, errors, "port_end"):
+            if end < start:
+                errors.append(
+                    "{0}: port_end {1} is below port_start {2}".format(
+                        where, end, start))
+            elif (end - start + 1) > MAX_PORT_RANGE_WIDTH:
+                errors.append(
+                    "{0}: port range spans {1} ports (limit {2})".format(
+                        where, end - start + 1, MAX_PORT_RANGE_WIDTH))
+    if entry.get("type") == "ha_peer_ports":
+        ports = entry.get("ports")
+        if isinstance(ports, list):
+            if len(ports) > MAX_PEER_PORTS:
+                errors.append(
+                    "{0}: {1} peer ports (limit {2})".format(
+                        where, len(ports), MAX_PEER_PORTS))
+            else:
+                for port in ports:
+                    _validate_port(port, where, errors)
+        elif ports is not None:
+            errors.append("{0}: ports must be a list".format(where))
+    if entry.get("type") == "command_matches":
+        pattern = entry.get("pattern")
+        if isinstance(pattern, str) and pattern:
+            if len(pattern) > MAX_PATTERN_LENGTH:
+                errors.append(
+                    "{0}: pattern is longer than {1} characters".format(
+                        where, MAX_PATTERN_LENGTH))
+            else:
+                # Compile at load time so a malformed regex is a manifest
+                # error rather than a per-check internal error at run time.
+                try:
+                    re.compile(pattern)
+                except re.error as error:
+                    errors.append("{0}: pattern is not a valid regular "
+                                  "expression ({1})".format(where, error))
+    if entry.get("type") == "http_reachable":
+        url = str(entry.get("url") or "")
+        if not url.lower().startswith("https://"):
+            errors.append("check {0!r}: url must use https".format(entry.get("id")))
+    if entry.get("type") in ("path_exists", "file_contains", "file_absent"):
+        path = str(entry.get("path") or "")
+        normalized = os.path.normpath(path) if path else ""
+        if not normalized or not os.path.isabs(normalized):
+            errors.append(
+                "check {0!r}: path must be a non-empty absolute path".format(
+                    entry.get("id")))
+        elif not any(normalized == prefix or normalized.startswith(prefix + os.sep)
+                    for prefix in ALLOWED_PATH_PREFIXES):
+            errors.append(
+                "check {0!r}: path {1!r} is not under an allowed prefix "
+                "{2}".format(entry.get("id"), path, sorted(ALLOWED_PATH_PREFIXES)))
+    _validate_strings(entry, errors)
+
+
+def _validate_docs(docs, errors, where):
+    if docs is None:
+        return
+    if not isinstance(docs, dict):
+        errors.append("{0}: docs must be an object".format(where))
+        return
+    unknown = set(docs) - _ALLOWED_DOCS_MODES
+    if unknown:
+        errors.append("{0}: docs has unknown keys {1}".format(
+            where, sorted(unknown)))
+    for mode, url in docs.items():
+        if mode not in _ALLOWED_DOCS_MODES:
+            continue
+        if not isinstance(url, str) or not url.lower().startswith("https://"):
+            errors.append(
+                "{0}: docs[{1!r}] must be a non-empty https:// URL".format(
+                    where, mode))
+
+
+def _validate_checks_list(checks, errors, where):
+    if not isinstance(checks, list):
+        errors.append("{0}: checks must be a list".format(where))
+        return
+    if len(checks) > MAX_CHECKS:
+        errors.append("{0}: too many checks: {1} (limit {2})".format(
+            where, len(checks), MAX_CHECKS))
+        return
+    for entry in checks:
+        _validate_check(entry, errors)
+
+
+def validate(document):
+    """Return (ok, errors) for a candidate manifest document.
+
+    Only one shape is supported: a "versions" map of exact CE version
+    string -> a {"checks": [...]} block. The CE version to run is resolved
+    by exact key match (see load()/load_local()); which version a check
+    applies to is entirely a function of which block it lives in. A flat
+    "checks" list at the top level is not accepted.
+
+    May also carry an optional "docs" object at the top level (the
+    default/fallback documentation links), an optional per-version "docs"
+    object that overrides the default for that exact CE version (see
+    _resolve_docs() for how these merge), and an optional "default_version"
+    naming which version key to run when no target version is given.
+    """
+    errors = []
+    if not isinstance(document, dict):
+        return False, ["manifest must be a JSON object"]
+
+    if document.get("schema_version") not in SUPPORTED_SCHEMA_VERSIONS:
+        errors.append("unsupported schema_version {0!r}".format(
+            document.get("schema_version")))
+
+    unknown = set(document) - _ALLOWED_TOP_LEVEL
+    if unknown:
+        errors.append("unknown top-level keys: {0}".format(sorted(unknown)))
+
+    _validate_docs(document.get("docs"), errors, "top-level docs")
+
+    default_version = document.get("default_version")
+    if default_version is not None and not isinstance(default_version, str):
+        errors.append("default_version must be a string")
+
+    if "checks" in document:
+        errors.append(
+            "manifest must use the 'versions' shape -- a flat 'checks' "
+            "list is no longer supported")
+        return False, errors
+    if "versions" not in document:
+        errors.append("manifest must have a 'versions' object")
+        return False, errors
+
+    versions = document.get("versions")
+    if not isinstance(versions, dict) or not versions:
+        errors.append("versions must be a non-empty object")
+        return False, errors
+    for version_key, version_block in versions.items():
+        where = "version {0!r}".format(version_key)
+        if not isinstance(version_block, dict):
+            errors.append("{0}: must be an object".format(where))
+            continue
+        unknown_version_keys = set(version_block) - _ALLOWED_VERSION_KEYS
+        if unknown_version_keys:
+            errors.append("{0}: unknown keys {1}".format(
+                where, sorted(unknown_version_keys)))
+        _validate_checks_list(version_block.get("checks"), errors, where)
+        _validate_docs(version_block.get("docs"), errors,
+                      "{0} docs".format(where))
+    # A default that doesn't name an actual version block is a silent
+    # no-op at run time (the auto-run path would fall through to "no
+    # checks defined"), so catch it at validation time instead.
+    if (isinstance(default_version, str) and versions
+            and default_version not in versions):
+        errors.append(
+            "default_version {0!r} is not a key in 'versions' "
+            "(available: {1})".format(default_version, sorted(versions)))
+    return (not errors), errors
+
+
+# --------------------------------------------------------------------------
+# Loading
+# --------------------------------------------------------------------------
+
+def _resolve_target_version(document, target_version, warnings):
+    """The version to actually run: the caller's choice, or the manifest's
+    own default_version when none was given.
+
+    Auto-run (no --target-version) has to resolve to SOME concrete version
+    before checks can be selected -- the manifest, not a hardcoded CLI
+    constant, is the source of truth for what that should be, so the
+    default can move forward (e.g. 7.0.0 -> 7.1.0) with a manifest update
+    alone, no script release. Only applies when the caller passed no
+    target_version at all; an explicit --target-version is never overridden.
+    """
+    if target_version is not None:
+        return target_version
+    default_version = document.get("default_version")
+    if not default_version:
+        warnings.append(
+            "no --target-version was given and this manifest defines no "
+            "default_version; no checks can be selected")
+        return None
+    return default_version
+
+
+def _resolve_checks(document, target_version, warnings):
+    """Pick the checks list for one CE version out of the "versions" map.
+
+    EXACT key match only -- deliberately no fallback. CE skips version
+    numbers on purpose, so an unknown version fails loudly with the list
+    of versions that do exist, rather than silently validating against a
+    neighbouring block nobody signed off on for that version.
+    """
+    versions = document.get("versions") or {}
+    version_block = versions.get(target_version)
+    if version_block is None:
+        if target_version is not None:
+            warnings.append(
+                "Cloud Exchange {0} is not a version these check definitions "
+                "cover. Available versions: {1}".format(
+                    target_version, ", ".join(sorted(versions, key=_version_sort_key))))
+        return []
+    return version_block.get("checks", [])
+
+
+def _resolve_docs(document, target_version):
+    """Merge the manifest's default docs with any version-specific override.
+
+    Returns {"install": url_or_None, "upgrade": url_or_None,
+    "migrate": url_or_None} -- always all three keys, so callers never need
+    a .get() with a default. A version-specific docs entry overrides the
+    top-level default key-by-key (e.g. a version can override just
+    "install" and still inherit the default "upgrade" link).
+    """
+    resolved = {mode: None for mode in _ALLOWED_DOCS_MODES}
+    default_docs = document.get("docs")
+    if isinstance(default_docs, dict):
+        for mode, url in default_docs.items():
+            if mode in resolved:
+                resolved[mode] = url
+
+    if target_version:
+        version_block = (document.get("versions") or {}).get(target_version)
+        if isinstance(version_block, dict):
+            version_docs = version_block.get("docs")
+            if isinstance(version_docs, dict):
+                for mode, url in version_docs.items():
+                    if mode in resolved:
+                        resolved[mode] = url
+
+    return resolved
+
+
+class ManifestError(Exception):
+    """A manifest could not be obtained or validated.
+
+    Raised rather than silently proceeding with no checks: the check set
+    defines what "the host is ready" means, so running with an unobtainable
+    or invalid one would report a verdict the operator cannot rely on. The
+    CLI turns this into an explanatory message and a non-zero exit.
+
+    The flags select which guidance the CLI prints, since the operator action
+    differs per cause:
+      `integrity` -- schema validation failed, or the body wasn't valid JSON.
+        Something is wrong with the manifest content itself.
+      `local` -- an operator-supplied --manifest-path could not be read.
+        Network/proxy advice would be nonsense here.
+      `no_checks` -- the manifest loaded fine but defines nothing for the
+        requested target version, so the host went unvalidated.
+      neither -- the download failed: fix connectivity, or use --manifest-path.
+    """
+
+    def __init__(self, summary, detail=None, integrity=False, local=False,
+                 no_checks=False):
+        Exception.__init__(self, summary)
+        self.summary = summary
+        self.detail = detail
+        self.integrity = integrity
+        self.local = local
+        self.no_checks = no_checks
+
+
+def load(url=None, proxy=None, target_version=None):
+    """Fetch the manifest over HTTPS.
+
+    Raises ManifestError if the manifest cannot be fetched or validated.
+    HTTPS transport (certificate- and hostname-verified by http_get) plus
+    schema validation and the command/path allowlists in validate() are the
+    trust boundary here -- there is no separate signature scheme layered on
+    top, since both this script and the manifest it fetches are published
+    publicly; a signature would only re-attest what TLS to the single
+    trusted source (MANIFEST_URL) already establishes.
+    """
+    warnings = []
+    manifest_url = url or MANIFEST_URL
+
+    if manifest_host_rejection(manifest_url):
+        raise ManifestError(
+            "The health check definitions may only be downloaded from {0}."
+            .format(", ".join(sorted(ALLOWED_MANIFEST_HOSTS))),
+            detail="Requested host: {0!r}. To use a local copy instead, pass "
+                   "--manifest-path.".format(
+                       urllib.parse.urlsplit(manifest_url).hostname or ""),
+            integrity=True)
+
+    response = http_get(manifest_url, max_bytes=MAX_MANIFEST_BYTES, proxy=proxy)
+    if not response["ok"]:
+        raise ManifestError(
+            "Could not download the health check definitions from {0} ({1})."
+            .format(manifest_url, response["error"]))
+
+    try:
+        document = json.loads(response["body"].decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ManifestError(
+            "The downloaded health check definitions are not valid JSON "
+            "({0}).".format(error), integrity=True)
+
+    ok, errors = validate(document)
+    if not ok:
+        raise ManifestError(
+            "The downloaded health check definitions failed validation.",
+            detail="; ".join(errors[:3]), integrity=True)
+
+    resolved_version = _resolve_target_version(document, target_version, warnings)
+    return {
+        "checks": _resolve_checks(document, resolved_version, warnings),
+        "source": "remote",
+        "manifest_version": document.get("manifest_version"),
+        "warnings": warnings,
+        "docs": _resolve_docs(document, resolved_version),
+        "target_version": resolved_version,
+    }
+
+
+def load_local(path, target_version=None):
+    """Load a manifest from a local file path.
+
+    No signature verification is performed: the operator already has trusted
+    access to the file (unlike a remote fetch, there is no untrusted network
+    hop to defend against). Schema validation still applies, and any failure
+    raises ManifestError rather than silently falling back -- an operator who
+    passed --manifest-path asked for that specific file, so quietly running a
+    different check set instead would be misleading.
+    """
+    warnings = []
+    try:
+        with open(path, "rb") as handle:
+            body = handle.read()
+    except (IOError, OSError) as error:
+        raise ManifestError(
+            "Could not read the health check definitions from {0} ({1}).".format(
+                path, error), local=True)
+
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as error:
+        raise ManifestError(
+            "The health check definitions in {0} are not valid JSON "
+            "({1}).".format(path, error), integrity=True)
+
+    ok, errors = validate(document)
+    if not ok:
+        raise ManifestError(
+            "The health check definitions in {0} failed validation.".format(path),
+            detail="; ".join(errors[:3]), integrity=True)
+
+    resolved_version = _resolve_target_version(document, target_version, warnings)
+    return {
+        "checks": _resolve_checks(document, resolved_version, warnings),
+        "source": "local:{0}".format(path),
+        "manifest_version": document.get("manifest_version"),
+        "warnings": warnings,
+        "docs": _resolve_docs(document, resolved_version),
+        "target_version": resolved_version,
+    }
+
+# ============================================================================
+# Host detection, CLI, and the top-level run
+# ============================================================================
+
+# Current release line. Bump each release -- only the fallback when no
+# version is supplied or detected. Keep it a real, shipped string: a
+# "-beta.N" suffix matches no manifest entry and aborts the run.
+DEFAULT_TARGET_VERSION = "7.0.0"
+DEFAULT_REPORT_NAME = "ce_healthcheck_report.json"
+
+_BANNER = """
+========================================
+ Netskope Cloud Exchange Health Check
+ script version {0}
+========================================
+""".strip()
+
+
+def require_root():
+    """None when running as root, else an explanatory message.
+
+    Required, not advisory: several facts (rootless `podman ps`, the
+    management service's /proc/<pid>/exe, git's ownership check) are wrong
+    -- confidently, not just missing -- when read unprivileged.
+    """
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None or geteuid() == 0:
+        return None
+    return ("This check must run as root, the same way setup does.\n"
+            "Re-run it as:  sudo python3 ./ce_healthcheck")
+
+
+def detect_mode(deployment_dir):
+    """'upgrade' when this looks like an existing CE deployment."""
+    compose_present = any(
+        os.path.exists(os.path.join(deployment_dir, name))
+        for name in ("docker-compose.yml", "podman-compose.yml")
+    )
+    data_present = os.path.isdir(os.path.join(deployment_dir, "data"))
+    vm_marker = os.path.exists("/.cloud_exchange_vm.marker")
+    if (compose_present and data_present) or vm_marker:
+        return "upgrade"
+    return "install"
+
+
+def _read_env_vars(path):
+    """Parse a dotenv-style file into a dict. Missing/unreadable -> {}."""
+    values = {}
+    try:
+        with open(path) as handle:
+            lines = handle.readlines()
+    except (IOError, OSError):
+        return values
+    for line in lines:
+        line = line.strip()
+        # Some .env files are hand-edited as shell-sourceable with an
+        # `export ` prefix; without stripping it the key reads as
+        # "export HA_IP_LIST", silently misdetecting HA as standalone.
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def _version_from_env_vars(values):
+    for key in ("CE_VERSION", "CORE_TAG", "CURRENT_DATABASE_VERSION"):
+        if key in values:
+            version = extract_version(values[key])
+            if version:
+                return version
+    return None
+
+
+def _resolved_env_vars(deployment_dir):
+    """Every env var setup would see, local file plus the HA shared file.
+
+    Same resolution order as detect_installed_version(): the local .env
+    first, then whatever it points at. In HA the local file is only a
+    pointer, so HA_ENABLED/HA_IP_LIST live in the shared copy.
+    """
+    local_vars = _read_env_vars(os.path.join(deployment_dir, ".env"))
+    merged = dict(local_vars)
+
+    env_file = local_vars.get("ENV_FILE")
+    location = local_vars.get("HA_NFS_DATA_DIRECTORY")
+    for path in _shared_env_candidates(env_file, location, deployment_dir):
+        for key, value in _read_env_vars(path).items():
+            # Local values win: they are this node's own, and setup layers
+            # the shared file underneath them.
+            merged.setdefault(key, value)
+    return merged
+
+
+def detect_deployment(deployment_dir):
+    """'HA' when this host is part of an HA cluster, else 'SA'.
+
+    Mirrors setup's own is_ha determination (setup ~line 2569), which reads
+    HA_ENABLED plus the presence of an HA_IP_LIST. HA_CURRENT_NODE and
+    HA_NFS_DATA_DIRECTORY are additional evidence a real HA node always
+    carries -- confirmed on a live HA node, whose local .env held
+    HA_NFS_DATA_DIRECTORY and HA_CURRENT_NODE while a Standalone host
+    carried an explicit HA_ENABLED=False.
+
+    Returns None when nothing indicates either way (a fresh host with no
+    .env at all), so the caller can apply its own default rather than
+    having a guess baked in here.
+    """
+    values = _resolved_env_vars(deployment_dir)
+    if not values:
+        return None
+
+    if str(values.get("HA_ENABLED", "")).strip().lower() == "true":
+        return "HA"
+    if values.get("HA_IP_LIST", "").strip():
+        return "HA"
+    if values.get("HA_CURRENT_NODE", "").strip():
+        return "HA"
+    if values.get("HA_NFS_DATA_DIRECTORY", "").strip():
+        return "HA"
+    if str(values.get("HA_ENABLED", "")).strip().lower() == "false":
+        return "SA"
+    return None
+
+
+def _shared_env_candidates(env_file, location, deployment_dir):
+    """Paths that may hold the real env values when the local one is a pointer."""
+    candidates = []
+    if env_file:
+        candidates.append(env_file)
+    if location:
+        candidates.append(os.path.join(location, "config", ".env"))
+        candidates.append(os.path.join(location, "config", ".env.ceversion"))
+    candidates.append(os.path.join(deployment_dir, ".env.ceversion"))
+    return candidates
+
+
+def detect_installed_version(deployment_dir):
+    """Best-effort read of the currently installed CE version.
+
+    In a Standalone deployment the local .env carries CE_VERSION/CORE_TAG
+    directly. In HA it does not: the local .env is a pointer file (LOCATION,
+    ENV_FILE, HA_NFS_DATA_DIRECTORY, ...) with none of the version keys --
+    the real values live in a shared .env on the HA NFS mount, at whichever
+    path setup itself wrote to ENV_FILE. setup resolves that same path as
+    f"{location}/config/.env" (see check_prerequisites() / the HA setup
+    branch), falling back to a co-located .env.ceversion if the full env
+    isn't found there. Mirror that resolution order rather than only ever
+    reading the local file, or every HA host reports no installed version and
+    silently defaults the target to the newest release line -- masking the
+    upgrade-readiness question this script exists to answer.
+    """
+    local_path = os.path.join(deployment_dir, ".env")
+    local_vars = _read_env_vars(local_path)
+
+    version = _version_from_env_vars(local_vars)
+    if version:
+        return version
+
+    # ENV_FILE is the exact path setup wrote; prefer it. HA_NFS_DATA_DIRECTORY
+    # is the real NFS mount root -- NOT "LOCATION", which setup uses for an
+    # unrelated .env.keys file path.
+    candidates = _shared_env_candidates(
+        local_vars.get("ENV_FILE"),
+        local_vars.get("HA_NFS_DATA_DIRECTORY"),
+        deployment_dir)
+
+    for path in candidates:
+        version = _version_from_env_vars(_read_env_vars(path))
+        if version:
+            return version
+    return None
+
+
+def parse_args(argv):
+    parser = argparse.ArgumentParser(
+        prog="ce_healthcheck",
+        description="Validate host prerequisites for Netskope Cloud Exchange.",
+    )
+    parser.add_argument("--mode", choices=["install", "upgrade", "migrate"],
+                        help="run context (default: auto-detected; "
+                             "'migrate' currently runs the same checks as "
+                             "'install')")
+    parser.add_argument("--deployment", choices=["SA", "HA"],
+                        help="target deployment type: standalone or HA")
+    parser.add_argument("--target-version",
+                        help="CE version you intend to install or upgrade to")
+    parser.add_argument("--deployment-dir", default=os.path.dirname(
+        os.path.abspath(__file__)),
+        help="CE deployment directory (default: this script's directory)")
+    parser.add_argument("--manifest-url",
+                        help="override the manifest URL (must be https)")
+    parser.add_argument("--list-versions", action="store_true",
+                        help="print the CE versions the check definitions "
+                             "cover as JSON and exit, without running any "
+                             "checks (used to populate a caller's version "
+                             "picker)")
+    parser.add_argument("--manifest-path",
+                        help="load checks from a local JSON file instead of "
+                        "fetching the manifest over the network (use this on "
+                        "a host with no outbound internet access)")
+    parser.add_argument("--report",
+                        help="path for the JSON report (default: ./{0})".format(
+                            DEFAULT_REPORT_NAME))
+    # --non-interactive is a kept alias -- existing CI invocations pass it.
+    parser.add_argument("--quiet", "--non-interactive", action="store_true",
+                        dest="non_interactive",
+                        help="suppress the detected-value notes (nothing is "
+                             "ever prompted for)")
+    parser.add_argument("--render-html", metavar="PAYLOADS_JSON",
+                        help="render already-collected node payloads (see "
+                             "--html for the output path) into one HTML "
+                             "report and exit; used by the management server "
+                             "to merge an HA cluster run")
+    parser.add_argument("--html",
+                        help="also write a self-contained HTML report to this "
+                             "path (downloadable from the Cloud Exchange UI)")
+    parser.add_argument("--json", action="store_true", dest="as_json",
+                        help="emit the full report on stdout instead of text")
+    return parser.parse_args(argv)
+
+
+def resolve_context(args, stdin_is_tty=None):
+    """Settle mode, deployment type, and target version.
+
+    Nothing is ever prompted for: every value is either passed as a flag or
+    detected from the host, so the same invocation behaves identically from a
+    terminal, from CI, and from the management server. On a terminal the
+    detected values are printed along with the flag that overrides each.
+    """
+    if stdin_is_tty is None:
+        stdin_is_tty = sys.stdin.isatty()
+    # Only controls whether detection is *reported*; nothing is asked either way.
+    announce = (stdin_is_tty and not args.non_interactive
+                and not getattr(args, 'as_json', False))
+
+    deployment_dir = args.deployment_dir
+    detected_mode = detect_mode(deployment_dir)
+    detected_deployment = detect_deployment(deployment_dir)
+    installed_version = detect_installed_version(deployment_dir)
+
+    mode = args.mode
+    if mode is None:
+        # Detection is filesystem evidence -- a compose file plus data/, or the
+        # CEasVM marker -- so report it rather than asking the operator to
+        # re-enter what was just detected. --mode overrides when needed.
+        mode = detected_mode
+        if announce:
+            print("Detected run context: {0}".format(
+                "existing CE deployment (upgrade/migration)"
+                if detected_mode == "upgrade" else "no CE deployment (fresh install)"))
+            print("  (override with --mode install|upgrade|migrate)")
+
+    deployment = args.deployment
+    if deployment is None:
+        # A fresh host with no .env has nothing to detect, so SA is correct.
+        deployment = detected_deployment or "SA"
+        if announce:
+            print("Detected deployment type: {0}".format(
+                "{0} (auto-detected)".format(deployment) if detected_deployment
+                else "SA (no existing deployment detected)"))
+            print("  (override with --deployment SA|HA)")
+
+    # Left as None (not a hardcoded constant) so the manifest's own
+    # "default_version" decides once it loads -- see main().
+    target_version = args.target_version
+    if target_version is None and announce:
+        print("Target CE version: not given -- will use the manifest's "
+              "default_version once it loads")
+        if installed_version:
+            print("  (currently installed: {0}; override with "
+                  "--target-version)".format(installed_version))
+        else:
+            print("  (override with --target-version)")
+
+    return {
+        "mode": mode,
+        "deployment": deployment,
+        "target_version": target_version,
+        "deployment_dir": deployment_dir,
+        "detected_mode": detected_mode,
+        "detected_deployment": detected_deployment,
+        "installed_version": installed_version,
+        # Which node produced this report. Set from the HA env when present so
+        # a merged multi-node HTML report can label each section; None on SA.
+        "node": _resolved_env_vars(deployment_dir).get("HA_CURRENT_NODE") or None,
+        "https_proxy": os.environ.get("HTTPS_PROXY")
+        or os.environ.get("https_proxy"),
+    }
+
+
+def _report_manifest_error(error, args):
+    """Explain an unobtainable manifest and exit non-zero.
+
+    Exit code 2 distinguishes "the health check could not run" from exit 1,
+    "the health check ran and a prerequisite failed" -- a CI job needs to
+    tell an infrastructure problem apart from a genuine prerequisite gap.
+    """
+    if args.as_json:
+        json.dump({"error": error.summary, "detail": error.detail,
+                   "results": [], "summary": {}},
+                  sys.stdout, indent=2, sort_keys=True)
+        sys.stdout.write("\n")
+        return 2
+
+    print("")
+    print(_NOTICE_FAIL_FMT.format(error.summary))
+    if error.detail:
+        print("")
+        print(error.detail)
+    print("")
+    if error.integrity:
+        print("The health check cannot continue with definitions that failed "
+              "verification. Contact Netskope Support if this persists.")
+    elif error.no_checks:
+        print("Check the version you entered. Some Cloud Exchange version "
+              "numbers are skipped and never released, so a version that "
+              "looks plausible may not exist. Re-run with --target-version "
+              "set to one of the versions listed above, or use "
+              "--list-versions to see them.")
+    elif error.local:
+        print("Verify that the path given to --manifest-path exists and is "
+              "readable, then run the health check again.")
+    else:
+        print("The health check needs to download its check definitions before "
+              "it can validate this host. Verify the network connectivity, "
+              "proxy settings or firewall configurations to address the "
+              "connectivity issues, then run the health check again.")
+        print("")
+        print("If this host has no outbound internet access, download "
+              "checks_bundled.json separately and re-run with "
+              "--manifest-path pointing at that file.")
+    return 2
+
+
+def _render_html_from_payloads(source_path, output_path):
+    """Render already-collected node payloads into one HTML file.
+
+    The management server collects one JSON payload per node (its own plus
+    each reachable peer's) and needs a single merged report out the other
+    end. It has nothing to import -- only this single self-contained script
+    ships to customers -- so the rendering it needs has to be reachable
+    through the script's own CLI.
+
+    `source_path` is a JSON file holding either one payload object, or:
+        {"nodes": [{"label": "Node 10.0.0.1", "payload": {...}},
+                   {"label": "Node 10.0.0.2", "unreachable": true,
+                    "error": "Management server unreachable"}]}
+
+    A node entry with no payload renders as an explicit "not checked"
+    section rather than being dropped, so a partial cluster run can never
+    read as a clean bill of health.
+    """
+    try:
+        with open(source_path) as handle:
+            document = json.load(handle)
+    except (IOError, OSError, ValueError) as error:
+        sys.stderr.write("could not read payloads from {0}: {1}\n".format(
+            source_path, error))
+        return 2
+
+    nodes = document.get("nodes") if isinstance(document, dict) else None
+    try:
+        if nodes is None:
+            write_html_report(output_path, document)
+        else:
+            write_html_report(output_path, [
+                (entry.get("label") or entry.get("node") or "Node",
+                 entry.get("payload") or _unreachable_payload(entry))
+                for entry in nodes
+            ])
+    except (IOError, OSError) as error:
+        sys.stderr.write("could not write {0}: {1}\n".format(output_path, error))
+        return 2
+    return 0
+
+
+def _unreachable_payload(entry):
+    """A stand-in payload for a node that could not be checked.
+
+    Rendered as a NOT_VERIFIED row so the operator can tell "not checked"
+    apart from "checked and healthy" -- omitting the node entirely would
+    make a partial run look complete.
+    """
+    reason = entry.get("error") or "Management server unreachable"
+    return build_payload(
+        {},
+        [make_result("node-unreachable", Level.NOT_VERIFIED,
+                     "Node health check: {0}".format(reason),
+                     label="Node could not be checked",
+                     remedy="This node was not included in the results. "
+                            "Confirm its management server is running and "
+                            "reachable, then run the health check again.")],
+        {"node": entry.get("node"), "deployment": "HA",
+         "unreachable": True, "error": reason},
+    )
+
+
+def _list_versions(args):
+    """Print the target versions the manifest covers, as JSON.
+
+    Enumerates the exact release keys in the manifest's "versions" map, so
+    a caller can populate a version picker.
+    """
+    document = None
+    error = None
+    try:
+        if args.manifest_path:
+            with open(args.manifest_path) as handle:
+                document = json.load(handle)
+        else:
+            # Same pin load() applies. The management server forwards an
+            # admin-supplied ?manifest_url= straight into this flag, so
+            # without it an arbitrary host's version keys could be echoed
+            # back through the API.
+            manifest_url = args.manifest_url or MANIFEST_URL
+            error = manifest_host_rejection(manifest_url)
+            if not error:
+                response = http_get(manifest_url,
+                                    max_bytes=MAX_MANIFEST_BYTES)
+                if response["ok"]:
+                    document = json.loads(response["body"].decode("utf-8"))
+                else:
+                    error = response["error"]
+    except (IOError, OSError, ValueError) as exc:
+        error = str(exc)
+
+
+    if not isinstance(document, dict):
+        # names the case where a body parsed cleanly but is not a manifest.
+        error = error or "check definitions are not a JSON object"
+        document = {}
+
+    versions = []
+    manifest_default = None
+    if document:
+        mapped = document.get("versions")
+        if isinstance(mapped, dict):
+            versions = sorted(mapped, key=_version_sort_key)
+        manifest_default = document.get("default_version")
+
+    # Prefer the manifest's own default_version, then the highest listed
+    # version, then the built-in constant.
+    default = manifest_default
+    if not default:
+        default = versions[-1] if versions else DEFAULT_TARGET_VERSION
+
+    payload = {
+        "versions": versions,
+        "default": default,
+        "manifest_version": document.get("manifest_version"),
+    }
+    if error:
+        payload["error"] = error
+    json.dump(payload, sys.stdout, indent=2, sort_keys=True, default=str)
+    sys.stdout.write("\n")
+    return 0 if versions or not error else 2
+
+
+def _version_sort_key(text):
+    """Sort version strings numerically, not lexically ("6.10" > "6.9")."""
+    try:
+        return parse_version(text)
+    except ValueError:
+        return (0, 0, 0, 0, 0)
+
+
+def main(argv=None):
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+
+    if args.list_versions:
+        return _list_versions(args)
+
+    if args.render_html:
+        if not args.html:
+            sys.stderr.write(
+                "--render-html requires --html <output path> to write the "
+                "rendered report to.\n")
+            return 2
+        return _render_html_from_payloads(args.render_html, args.html)
+
+    # Exit 2 ("could not run"), never 1 -- some checks fail confidently
+    # wrong, not just missing, when read unprivileged.
+    privilege_error = require_root()
+    if privilege_error is not None:
+        if args.as_json:
+            json.dump({"error": privilege_error, "detail": None,
+                       "results": [], "summary": {}},
+                      sys.stdout, indent=2, sort_keys=True)
+            sys.stdout.write("\n")
+        else:
+            print("")
+            print(_NOTICE_FAIL_FMT.format(privilege_error))
+        return 2
+
+    context = resolve_context(args)
+
+    # Validate the version string before anything else uses it: a malformed
+    # one would otherwise surface as a confusing "no checks defined" instead
+    # of the real problem. Exit 2 ("could not run"), not 1. Skipped when
+    # target_version is None -- that's resolved from default_version below.
+    if context["target_version"] is not None:
+        try:
+            parse_version(context["target_version"])
+        except ValueError:
+            return _report_manifest_error(ManifestError(
+                "{0!r} is not a recognizable Cloud Exchange version string."
+                .format(context["target_version"]),
+                detail="Provide a version like '7.0.0', or check the versions "
+                       "available with --list-versions.",
+                no_checks=True), args)
+
+    if not args.as_json:
+        print(_BANNER.format(__version__))
+        print("Mode:              {0}".format(context["mode"]))
+        print("Deployment type:   {0}".format(context["deployment"]))
+        print("Target CE version: {0}".format(
+            context["target_version"] or "(resolving from manifest default)"))
+        print("Deployment dir:    {0}".format(context["deployment_dir"]))
+        print("")
+
+    try:
+        if args.manifest_path:
+            loaded = load_local(args.manifest_path,
+                                target_version=context["target_version"])
+        else:
+            loaded = load(url=args.manifest_url,
+                          proxy=context["https_proxy"],
+                          target_version=context["target_version"])
+    except ManifestError as error:
+        # No fallback: without a valid check set there is no
+        # trustworthy verdict to report, so stop rather than imply the host
+        # was assessed. Wording mirrors setup's own connectivity guidance.
+        return _report_manifest_error(error, args)
+
+    # load()/load_local() resolve None to the manifest's own default_version
+    # -- adopt that value everywhere downstream instead of a stale guess.
+    if context["target_version"] is None:
+        resolved = loaded.get("target_version")
+        if resolved is None:
+            # Neither was available; fall back for manifests authored
+            # before default_version existed.
+            resolved = DEFAULT_TARGET_VERSION
+            loaded["warnings"].append(
+                "no --target-version was given and this manifest defines "
+                "no default_version; falling back to the script's built-in "
+                "default {0!r}".format(resolved))
+        context["target_version"] = resolved
+        if not args.as_json:
+            print("Target CE version: {0} (from manifest default_version)"
+                  .format(resolved))
+
+    if not loaded["checks"]:
+        # Zero checks is not a pass -- exiting 0 with "0 failed" would read
+        # as "host is ready" when nothing was verified. Same exit code as an
+        # unobtainable manifest; _resolve_checks() already listed the
+        # versions that ARE available in its warning.
+        detail = "; ".join(loaded["warnings"]) if loaded["warnings"] else (
+            "The check definitions in use do not cover this target version, "
+            "so this host was not validated.")
+        return _report_manifest_error(ManifestError(
+            "Cloud Exchange version {0} does not exist in these check "
+            "definitions, so this host was not validated.".format(
+                context["target_version"]),
+            detail=detail, no_checks=True), args)
+
+    for warning in loaded["warnings"]:
+        if not args.as_json:
+            print(_NOTICE_WARN_FMT.format(warning))
+
+    host_facts = collect(context["deployment_dir"])
+    # The peer list only exists at run time (HA_IP_LIST in the env), so a
+    # manifest cannot enumerate it -- hand it to the engine as a fact and let
+    # the ha_peer_ports check fan out across whatever nodes this cluster has.
+    _ha_env = _resolved_env_vars(context["deployment_dir"])
+    host_facts["ha_current_node"] = _ha_env.get("HA_CURRENT_NODE") or None
+    host_facts["ha_nodes"] = [
+        ip.strip() for ip in (_ha_env.get("HA_IP_LIST") or "").split(",")
+        if ip.strip()
+    ]
+    # Let manifest checks branch on detected OS/runtime via applies_when,
+    # mirroring setup's own isRedHat()/docker-then-podman-fallback branching.
+    # Lowercased to match validate()'s requirement on the manifest side.
+    context["os_id"] = ((host_facts.get("os") or {}).get("id") or "").lower() or None
+    context["detected_runtime"] = (host_facts.get("runtime") or {}).get("runtime")
+    context["is_vm"] = bool(host_facts.get("is_vm"))
+    results = run_all(loaded["checks"], host_facts, context)
+
+    if not args.as_json:
+        for result in results:
+            print_result(result)
+
+    counts = summarize(results)
+    code = exit_code(results)
+
+    docs_url = None
+    if code == 0 and context["mode"] in ("install", "upgrade", "migrate"):
+        docs_url = (loaded.get("docs") or {}).get(context["mode"])
+
+    report_path = args.report or os.path.join(os.getcwd(), DEFAULT_REPORT_NAME)
+    meta = {
+        "script_version": __version__,
+        "mode": context["mode"],
+        "deployment": context["deployment"],
+        "target_version": context["target_version"],
+        "detected_mode": context["detected_mode"],
+        "detected_deployment": context["detected_deployment"],
+        "installed_version": context["installed_version"],
+        "deployment_dir": context["deployment_dir"],
+        "node": context.get("node"),
+        "manifest_source": loaded["source"],
+        "manifest_version": loaded["manifest_version"],
+        "manifest_warnings": loaded["warnings"],
+        "docs_url": docs_url,
+    }
+
+    try:
+        write_json_report(report_path, host_facts, results, meta)
+        report_written = report_path
+    except (IOError, OSError) as error:
+        report_written = None
+        if not args.as_json:
+            print(_NOTICE_WARN_FMT.format(
+                "could not write report: {0}".format(error)))
+
+    html_written = None
+    if args.html:
+        try:
+            write_html_report(
+                args.html, build_payload(host_facts, results, meta))
+            html_written = args.html
+        except (IOError, OSError) as error:
+            if not args.as_json:
+                print(_NOTICE_WARN_FMT.format(
+                    "could not write HTML report: {0}".format(error)))
+
+    if args.as_json:
+        json.dump({"meta": meta, "facts": host_facts, "results": results,
+                   "summary": counts}, sys.stdout, indent=2, sort_keys=True,
+                  default=str)
+        sys.stdout.write("\n")
+        return code
+
+    print("")
+    print("-" * 72)
+    print("Summary: {passed} passed, {warned} warning(s), {failed} failed, "
+          "{skipped} not applicable, {not_verified} not verified".format(**counts))
+
+    # List every unverified check with its reason, so exit 0 is never
+    # mistaken for "everything was checked".
+    unverified = [r for r in results if r["level"] == Level.NOT_VERIFIED]
+    if unverified:
+        print("")
+        print("Could not be verified ({0} of {1} checks):".format(
+            len(unverified), counts["total"]))
+        for result in unverified:
+            detail = (result.get("message") or "").split(": ", 1)
+            print("  - {0}: {1}".format(
+                display_name(result),
+                detail[1] if len(detail) > 1 else "reason not recorded"))
+
+    all_not_verified = counts["total"] > 0 and counts["not_verified"] == counts["total"]
+    if code:
+        print("")
+        print(_NOTICE_FAIL_FMT.format(
+            "One or more prerequisite checks have failed. Please ensure the "
+            "minimum system requirements are met to proceed further."))
+    elif all_not_verified:
+        # Nothing failed because nothing was actually checked. Folding this
+        # into the WARN-tolerant "meets prerequisites" message below would
+        # report a host as ready when it was never assessed at all.
+        print("")
+        print(_NOTICE_WARN_FMT.format(
+            "None of the prerequisite checks for Cloud Exchange {0} could "
+            "be verified on this host. This is not a pass -- re-run once the "
+            "conditions needed to check them are in "
+            "place.".format(context["target_version"])))
+    elif counts["warned"] or counts["not_verified"]:
+        # States how much was verified rather than asserting a broader pass.
+        print("")
+        print("Verified {0} of {1} checks for Cloud Exchange {2}; {3} could "
+              "not be verified. No mandatory prerequisite failed. Review the "
+              "items above before proceeding.".format(
+                  counts["total"] - counts["not_verified"], counts["total"],
+                  context["target_version"], counts["not_verified"])
+              if counts["not_verified"] else
+              "This host meets the mandatory prerequisites for Cloud Exchange "
+              "{0}. Review the warnings above before proceeding.".format(
+                  context["target_version"]))
+    else:
+        print("")
+        print("This host meets the prerequisites for Cloud Exchange {0}.".format(
+            context["target_version"]))
+
+    if docs_url:
+        print("")
+        print("Refer to the Netskope documentation for the {0} procedure: "
+              "{1}".format(context["mode"], docs_url))
+
+    if report_written:
+        print("")
+        print("A detailed report has been saved to {0}".format(report_written))
+    if html_written:
+        print("An HTML report has been saved to {0}".format(html_written))
+    return code
+
+
+# TODO: future scope - add a --bundle flag that zips the JSON report with
+# host details for attaching to a support case (see diagnose for precedent).
+# TODO: future scope - credit-based sizing recommendation (spec section 7):
+# enumerate active plugin configurations and recommend Medium vs Large.
+
+if __name__ == "__main__":
+    sys.exit(main())

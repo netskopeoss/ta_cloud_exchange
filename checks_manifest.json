@@ -1,0 +1,2538 @@
+{
+  "schema_version": 1,
+  "manifest_version": "2026.07.30",
+  "default_version": "7.0.0",
+  "docs": {
+    "install": "https://docs.netskope.com/en/install-cloud-exchange",
+    "upgrade": "https://docs.netskope.com/en/upgrade-cloud-exchange",
+    "migrate": "https://docs.netskope.com/en/migrate-cloud-exchange"
+  },
+  "versions": {
+    "5.1.2": {
+      "checks": [
+        {
+          "id": "avx-support",
+          "type": "cpu_flag",
+          "flag": "avx",
+          "message": "CPU AVX instruction support",
+          "remedy": "CPU with AVX is required for CE service, please move to a host whose CPU supports this."
+        },
+        {
+          "id": "sizing-profile",
+          "type": "cpu_profile",
+          "message": "System sizing profile",
+          "profiles": [
+            {
+              "name": "Medium",
+              "cpu": 8,
+              "memory_gb": 16,
+              "disk_gb": 80,
+              "tolerance": 0.9
+            },
+            {
+              "name": "Large",
+              "cpu": 16,
+              "memory_gb": 32,
+              "disk_gb": 120,
+              "tolerance": 0.9
+            }
+          ],
+          "remedy": "CE sizing profiles are Medium (8 CPU / 16 GB RAM / 80 GB disk) and Large (16 CPU / 32 GB RAM / 120 GB disk). Align the machine to one of these exactly -- CPU counts outside this list are not a supported profile."
+        },
+        {
+          "id": "disk-free",
+          "type": "min_resource",
+          "fact": "deployment_disk.free_gb",
+          "minimum": 20,
+          "message": "Free disk on the deployment filesystem (GB)",
+          "remedy": "At least 20 GB must be free for images, volumes and upgrade staging. Free space or grow the filesystem."
+        },
+        {
+          "id": "var-disk-free",
+          "type": "min_resource",
+          "fact": "var_disk.free_gb",
+          "minimum": 20,
+          "warn_on_shortfall": true,
+          "message": "Free disk under /var (GB)",
+          "remedy": "Container images and logs live under /var. Free space there or grow the filesystem. Where /var is its own disk, a shortfall here can stall image pulls and logging even when the deployment filesystem is fine."
+        },
+        {
+          "id": "openssl-version",
+          "type": "version_min",
+          "fact": "openssl_version",
+          "minimum": "1.1.1",
+          "message": "OpenSSL version",
+          "remedy": "Upgrade OpenSSL to 1.1.1 or newer.",
+          "fail_if_missing": true
+        },
+        {
+          "id": "connectivity-docker-hub",
+          "type": "http_reachable",
+          "url": "https://hub.docker.com",
+          "message": "Connectivity to Docker Hub",
+          "remedy": "Verify network connectivity, proxy settings and firewall rules. CE cannot pull images without outbound HTTPS access.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-index",
+          "type": "http_reachable",
+          "url": "https://index.docker.io/v1/",
+          "message": "Connectivity to the Docker registry index",
+          "remedy": "Image pulls resolve through index.docker.io, not hub.docker.com. Allow outbound HTTPS to index.docker.io.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-registry",
+          "type": "http_reachable",
+          "url": "https://registry-1.docker.io/v2/",
+          "message": "Connectivity to the Docker registry endpoint",
+          "remedy": "Image layers are served from registry-1.docker.io. Allow outbound HTTPS to that host.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-archive",
+          "type": "port_reachable",
+          "message": "Ubuntu package archive",
+          "host": "archive.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-security",
+          "type": "port_reachable",
+          "message": "Ubuntu security archive",
+          "host": "security.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-keyserver",
+          "type": "port_reachable",
+          "message": "Ubuntu keyserver",
+          "host": "keyserver.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-ppa",
+          "type": "port_reachable",
+          "message": "Launchpad PPA (GlusterFS packages)",
+          "host": "ppa.launchpad.net",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-esm",
+          "type": "http_reachable",
+          "message": "Ubuntu ESM",
+          "url": "https://esm.ubuntu.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-cdn",
+          "type": "port_reachable",
+          "message": "Red Hat CDN",
+          "host": "cdn.redhat.com",
+          "port": 443,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-buildlogs",
+          "type": "http_reachable",
+          "message": "CentOS build logs",
+          "url": "https://buildlogs.centos.org",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-centos-cdn",
+          "type": "port_reachable",
+          "message": "CentOS CDN (GlusterFS packages)",
+          "host": "buildlogs.cdn.centos.org",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-mongo-downloads",
+          "type": "http_reachable",
+          "message": "MongoDB downloads",
+          "url": "https://downloads.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-docker-download",
+          "type": "http_reachable",
+          "message": "Docker package repository",
+          "url": "https://download.docker.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "vm-mongo-compass",
+          "type": "http_reachable",
+          "message": "MongoDB Compass",
+          "url": "https://compass.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "selinux-status",
+          "type": "command_matches",
+          "command": [
+            "sestatus"
+          ],
+          "pattern": "SELinux status:\\s+disabled",
+          "message": "SELinux status",
+          "remedy": "Disable SELinux for a successful Cloud Exchange deployment, or re-run installation with --ignore-failures once you understand the consequences.",
+          "applies_when": {
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-4369",
+          "type": "port_free",
+          "message": "RabbitMQ epmd port 4369",
+          "port": 4369,
+          "owner": "rabbitmq",
+          "remedy": "Free port 4369 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-5671",
+          "type": "port_free",
+          "message": "RabbitMQ AMQPS port 5671",
+          "port": 5671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 5671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-15671",
+          "type": "port_free",
+          "message": "RabbitMQ management port 15671",
+          "port": 15671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 15671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-25672",
+          "type": "port_free",
+          "message": "RabbitMQ clustering port 25672",
+          "port": 25672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 25672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-35672",
+          "type": "port_free",
+          "message": "RabbitMQ CLI port 35672",
+          "port": 35672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 35672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-glusterd",
+          "type": "port_free",
+          "message": "GlusterFS daemon port 24007",
+          "port": 24007,
+          "shared": "GlusterFS",
+          "remedy": "Port 24007 is in use. Confirm it is being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-gluster-bricks",
+          "type": "port_range_free",
+          "message": "GlusterFS brick ports 24009-24029",
+          "port_start": 24009,
+          "port_end": 24029,
+          "shared": "GlusterFS",
+          "timeout": 1,
+          "remedy": "These ports are reserved for GlusterFS bricks. Confirm they are being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-mongo",
+          "type": "port_free",
+          "message": "MongoDB port 27017",
+          "port": 27017,
+          "owner": "mongodb",
+          "remedy": "Free port 27017 or confirm it is already held by the intended CE MongoDB instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-peer-connectivity",
+          "type": "ha_peer_ports",
+          "message": "HA peer node connectivity",
+          "ports": [
+            4369,
+            5671,
+            15671,
+            25672,
+            35672,
+            27017,
+            24007,
+            24009,
+            24010,
+            24011,
+            24012,
+            24013,
+            24014,
+            24015,
+            24016,
+            24017,
+            24018,
+            24019,
+            24020,
+            24021,
+            24022,
+            24023,
+            24024,
+            24025,
+            24026,
+            24027,
+            24028,
+            24029
+          ],
+          "timeout": 2,
+          "remedy": "Please ensure all HA nodes are reachable from each other. Check firewall rules and security groups between the nodes.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "docker-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "25.0.3",
+          "message": "Container runtime version",
+          "remedy": "The minimum supported Docker version for Cloud Exchange 5.1.2 is 25.0.3; 28.0.0 is recommended.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          },
+          "recommended": "28.0.0"
+        },
+        {
+          "id": "container-runtime-detected",
+          "type": "runtime_detected",
+          "message": "Container runtime (Docker or Podman)",
+          "remedy": "Install Docker or Podman before proceeding. CE requires one of these container runtimes."
+        },
+        {
+          "id": "compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "2.16.0",
+          "message": "Docker Compose plugin version",
+          "remedy": "The minimum supported docker compose version for Cloud Exchange 5.1.2 is 2.16.0; 2.27.0 is recommended.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          },
+          "recommended": "2.27.0"
+        },
+        {
+          "id": "podman-compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "1.0.3",
+          "message": "podman-compose version",
+          "remedy": "The minimum supported podman-compose version for Cloud Exchange 5.1.2 is 1.0.3; 1.0.6 is recommended.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "fail_if_missing": true,
+          "not_verified_is_fatal": true,
+          "recommended": "1.0.6"
+        },
+        {
+          "id": "podman-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "3.4.2",
+          "recommended": "4.6.1",
+          "message": "Podman version",
+          "remedy": "Minimum supported Podman is 3.4.2; recommended is 4.6.1.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "os-supported",
+          "type": "os_supported",
+          "allowed": [
+            {
+              "id": "ubuntu",
+              "majors": [
+                "20",
+                "22"
+              ]
+            },
+            {
+              "id": "rhel",
+              "majors": [
+                "8",
+                "9"
+              ],
+              "aliases": [
+                "redhat",
+                "rhel",
+                "red hat enterprise linux"
+              ]
+            }
+          ],
+          "warn_on_version_mismatch": true,
+          "message": "Host operating system",
+          "remedy": "Cloud Exchange 5.1.2 is supported on Ubuntu 20.04/22.04 and RHEL 8/9. An untested version of Ubuntu or RHEL is permitted -- setup warns and proceeds -- but any other distribution is not supported. Move to a tested version for a supported configuration."
+        },
+        {
+          "id": "no-local-repo-changes",
+          "type": "command_output_empty",
+          "command": [
+            "git",
+            "diff",
+            "-G."
+          ],
+          "cwd": "{deployment_dir}",
+          "message": "Local changes in the deployment directory",
+          "remedy": "The setup script cannot proceed while the deployment directory has uncommitted local changes. Remove or stash the local changes before upgrading.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "ui-port",
+          "type": "port_free",
+          "message": "UI port 443",
+          "port": 443,
+          "owner": "ui",
+          "remedy": "Free port 443 or confirm it is already held by the intended CE UI container.",
+          "timeout": 1
+        },
+        {
+          "id": "management-port",
+          "type": "port_free",
+          "message": "Management service port 8000",
+          "port": 8000,
+          "owner": "management",
+          "remedy": "Free port 8000 or confirm it is already held by the intended CE management service.",
+          "timeout": 1
+        },
+        {
+          "id": "pip-available",
+          "type": "bool_fact",
+          "fact": "pip_available",
+          "message": "Python pip module availability",
+          "remedy": "Install python3-pip (or the equivalent package for your operating system). The setup script requires pip to create its virtual environment."
+        },
+        {
+          "id": "venv-module-available",
+          "type": "bool_fact",
+          "fact": "venv_module_available",
+          "message": "Python venv module availability",
+          "remedy": "Install python3-venv (or the equivalent package for your operating system). The setup script requires the venv module to create its virtual environment."
+        },
+        {
+          "id": "ensurepip-module-available",
+          "type": "bool_fact",
+          "fact": "ensurepip_module_available",
+          "message": "Python ensurepip module availability",
+          "remedy": "Install python3-ensurepip (or the equivalent package for your operating system). The setup script requires ensurepip to bootstrap pip inside its virtual environment."
+        },
+        {
+          "id": "podman-plugin-installed",
+          "type": "command_matches",
+          "command": [
+            "rpm",
+            "-qa"
+          ],
+          "pattern": "^podman-plugins",
+          "message": "Podman plugins package",
+          "remedy": "Run `yum install podman-plugins` and re-run this check -- required podman plugins are not installed.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          },
+          "not_verified_is_fatal": true
+        }
+      ]
+    },
+    "6.0.0": {
+      "checks": [
+        {
+          "id": "avx-support",
+          "type": "cpu_flag",
+          "flag": "avx",
+          "message": "CPU AVX instruction support",
+          "remedy": "CPU with AVX is required for CE service, please move to a host whose CPU supports this."
+        },
+        {
+          "id": "sizing-profile",
+          "type": "cpu_profile",
+          "message": "System sizing profile",
+          "profiles": [
+            {
+              "name": "Medium",
+              "cpu": 8,
+              "memory_gb": 16,
+              "disk_gb": 80,
+              "tolerance": 0.9
+            },
+            {
+              "name": "Large",
+              "cpu": 16,
+              "memory_gb": 32,
+              "disk_gb": 120,
+              "tolerance": 0.9
+            }
+          ],
+          "remedy": "CE sizing profiles are Medium (8 CPU / 16 GB RAM / 80 GB disk) and Large (16 CPU / 32 GB RAM / 120 GB disk). Align the machine to one of these exactly -- CPU counts outside this list are not a supported profile."
+        },
+        {
+          "id": "disk-free",
+          "type": "min_resource",
+          "fact": "deployment_disk.free_gb",
+          "minimum": 20,
+          "message": "Free disk on the deployment filesystem (GB)",
+          "remedy": "At least 20 GB must be free for images, volumes and upgrade staging. Free space or grow the filesystem."
+        },
+        {
+          "id": "var-disk-free",
+          "type": "min_resource",
+          "fact": "var_disk.free_gb",
+          "minimum": 20,
+          "warn_on_shortfall": true,
+          "message": "Free disk under /var (GB)",
+          "remedy": "Container images and logs live under /var. Free space there or grow the filesystem. Where /var is its own disk, a shortfall here can stall image pulls and logging even when the deployment filesystem is fine."
+        },
+        {
+          "id": "openssl-version",
+          "type": "version_min",
+          "fact": "openssl_version",
+          "minimum": "1.1.1",
+          "message": "OpenSSL version",
+          "remedy": "Upgrade OpenSSL to 1.1.1 or newer.",
+          "fail_if_missing": true
+        },
+        {
+          "id": "connectivity-docker-hub",
+          "type": "http_reachable",
+          "url": "https://hub.docker.com",
+          "message": "Connectivity to Docker Hub",
+          "remedy": "Verify network connectivity, proxy settings and firewall rules. CE cannot pull images without outbound HTTPS access.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-index",
+          "type": "http_reachable",
+          "url": "https://index.docker.io/v1/",
+          "message": "Connectivity to the Docker registry index",
+          "remedy": "Image pulls resolve through index.docker.io, not hub.docker.com. Allow outbound HTTPS to index.docker.io.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-registry",
+          "type": "http_reachable",
+          "url": "https://registry-1.docker.io/v2/",
+          "message": "Connectivity to the Docker registry endpoint",
+          "remedy": "Image layers are served from registry-1.docker.io. Allow outbound HTTPS to that host.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-archive",
+          "type": "port_reachable",
+          "message": "Ubuntu package archive",
+          "host": "archive.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-security",
+          "type": "port_reachable",
+          "message": "Ubuntu security archive",
+          "host": "security.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-keyserver",
+          "type": "port_reachable",
+          "message": "Ubuntu keyserver",
+          "host": "keyserver.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-ppa",
+          "type": "port_reachable",
+          "message": "Launchpad PPA (GlusterFS packages)",
+          "host": "ppa.launchpad.net",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-esm",
+          "type": "http_reachable",
+          "message": "Ubuntu ESM",
+          "url": "https://esm.ubuntu.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-cdn",
+          "type": "port_reachable",
+          "message": "Red Hat CDN",
+          "host": "cdn.redhat.com",
+          "port": 443,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-buildlogs",
+          "type": "http_reachable",
+          "message": "CentOS build logs",
+          "url": "https://buildlogs.centos.org",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-centos-cdn",
+          "type": "port_reachable",
+          "message": "CentOS CDN (GlusterFS packages)",
+          "host": "buildlogs.cdn.centos.org",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-mongo-downloads",
+          "type": "http_reachable",
+          "message": "MongoDB downloads",
+          "url": "https://downloads.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-docker-download",
+          "type": "http_reachable",
+          "message": "Docker package repository",
+          "url": "https://download.docker.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "vm-mongo-compass",
+          "type": "http_reachable",
+          "message": "MongoDB Compass",
+          "url": "https://compass.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "selinux-status",
+          "type": "command_matches",
+          "command": [
+            "sestatus"
+          ],
+          "pattern": "SELinux status:\\s+disabled",
+          "message": "SELinux status",
+          "remedy": "Disable SELinux for a successful Cloud Exchange deployment, or re-run installation with --ignore-failures once you understand the consequences.",
+          "applies_when": {
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-4369",
+          "type": "port_free",
+          "message": "RabbitMQ epmd port 4369",
+          "port": 4369,
+          "owner": "rabbitmq",
+          "remedy": "Free port 4369 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-5671",
+          "type": "port_free",
+          "message": "RabbitMQ AMQPS port 5671",
+          "port": 5671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 5671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-15671",
+          "type": "port_free",
+          "message": "RabbitMQ management port 15671",
+          "port": 15671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 15671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-25672",
+          "type": "port_free",
+          "message": "RabbitMQ clustering port 25672",
+          "port": 25672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 25672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-35672",
+          "type": "port_free",
+          "message": "RabbitMQ CLI port 35672",
+          "port": 35672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 35672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-glusterd",
+          "type": "port_free",
+          "message": "GlusterFS daemon port 24007",
+          "port": 24007,
+          "shared": "GlusterFS",
+          "remedy": "Port 24007 is in use. Confirm it is being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-gluster-bricks",
+          "type": "port_range_free",
+          "message": "GlusterFS brick ports 24009-24029",
+          "port_start": 24009,
+          "port_end": 24029,
+          "shared": "GlusterFS",
+          "timeout": 1,
+          "remedy": "These ports are reserved for GlusterFS bricks. Confirm they are being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-mongo",
+          "type": "port_free",
+          "message": "MongoDB port 27017",
+          "port": 27017,
+          "owner": "mongodb",
+          "remedy": "Free port 27017 or confirm it is already held by the intended CE MongoDB instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-peer-connectivity",
+          "type": "ha_peer_ports",
+          "message": "HA peer node connectivity",
+          "ports": [
+            4369,
+            5671,
+            15671,
+            25672,
+            35672,
+            27017,
+            24007,
+            24009,
+            24010,
+            24011,
+            24012,
+            24013,
+            24014,
+            24015,
+            24016,
+            24017,
+            24018,
+            24019,
+            24020,
+            24021,
+            24022,
+            24023,
+            24024,
+            24025,
+            24026,
+            24027,
+            24028,
+            24029
+          ],
+          "timeout": 2,
+          "remedy": "Please ensure all HA nodes are reachable from each other. Check firewall rules and security groups between the nodes.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "docker-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "28.4.0",
+          "message": "Container runtime version",
+          "remedy": "The minimum supported Docker version is 28.4.0. Upgrade the container runtime.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          }
+        },
+        {
+          "id": "container-runtime-detected",
+          "type": "runtime_detected",
+          "message": "Container runtime (Docker or Podman)",
+          "remedy": "Install Docker or Podman before proceeding. CE requires one of these container runtimes."
+        },
+        {
+          "id": "compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "2.39.4",
+          "message": "Docker Compose plugin version",
+          "remedy": "The minimum supported docker compose version is 2.39.4. Upgrade the compose plugin.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          }
+        },
+        {
+          "id": "podman-compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "1.5.0",
+          "message": "podman-compose version",
+          "remedy": "Minimum supported podman-compose is 1.5.0.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "fail_if_missing": true,
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "podman-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "4.9.0",
+          "recommended": "5.4.0",
+          "message": "Podman version",
+          "remedy": "Minimum supported Podman is 4.9.0; recommended is 5.4.0.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "os-supported",
+          "type": "os_supported",
+          "allowed": [
+            {
+              "id": "ubuntu",
+              "majors": [
+                "22"
+              ],
+              "minimum": "22.04"
+            },
+            {
+              "id": "ubuntu",
+              "majors": [
+                "24"
+              ],
+              "minimum": "24.04"
+            },
+            {
+              "id": "rhel",
+              "aliases": [
+                "redhat",
+                "rhel",
+                "red hat enterprise linux"
+              ],
+              "majors": [
+                "8"
+              ],
+              "minimum": "8.8"
+            },
+            {
+              "id": "rhel",
+              "aliases": [
+                "redhat",
+                "rhel",
+                "red hat enterprise linux"
+              ],
+              "majors": [
+                "9"
+              ],
+              "minimum": "9.5"
+            }
+          ],
+          "message": "Host operating system",
+          "remedy": "Supported host operating systems are Ubuntu 22.04+ or 24.04+ and RHEL 8.8+ or 9.5+. Migrate to a supported OS before installing or upgrading."
+        },
+        {
+          "id": "cevenv-python-drift",
+          "type": "version_min",
+          "fact": "venv_python_version",
+          "minimum": "3.8",
+          "message": "Python version in the CE virtual environment",
+          "remedy": "The existing virtual environment is built against an interpreter older than this Cloud Exchange version requires. Remove it so setup recreates it with a supported Python."
+        },
+        {
+          "id": "setup-sudo-python-version",
+          "type": "version_min",
+          "fact": "sudo_python3_version",
+          "minimum": "3.8",
+          "message": "Python version available to the setup script",
+          "remedy": "The setup script runs as 'sudo python3 ./setup' and exits immediately if that interpreter is older than the required version. Install a supported Python and make it the default for the root user before running setup."
+        },
+        {
+          "id": "mgmt-server-process-python-version",
+          "type": "python_version_drift",
+          "fact": "mgmt_server_process_python_version",
+          "minimum": "3.8",
+          "message": "Python version used by the running management server",
+          "remedy": "The running management server is using an older interpreter than this version requires, because the service started before the current environment took effect. Restart the service ('systemctl restart cloud-exchange') so it picks up the correct interpreter."
+        },
+        {
+          "id": "no-local-repo-changes",
+          "type": "command_output_empty",
+          "command": [
+            "git",
+            "diff",
+            "-G."
+          ],
+          "cwd": "{deployment_dir}",
+          "message": "Local changes in the deployment directory",
+          "remedy": "The setup script cannot proceed while the deployment directory has uncommitted local changes. Remove or stash the local changes before upgrading.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "ui-port",
+          "type": "port_free",
+          "message": "UI port 443",
+          "port": 443,
+          "owner": "ui",
+          "remedy": "Free port 443 or confirm it is already held by the intended CE UI container.",
+          "timeout": 1
+        },
+        {
+          "id": "management-port",
+          "type": "port_free",
+          "message": "Management service port 8000",
+          "port": 8000,
+          "owner": "management",
+          "remedy": "Free port 8000 or confirm it is already held by the intended CE management service.",
+          "timeout": 1
+        },
+        {
+          "id": "pip-available",
+          "type": "bool_fact",
+          "fact": "pip_available",
+          "message": "Python pip module availability",
+          "remedy": "Install python3-pip (or the equivalent package for your operating system). The setup script requires pip to create its virtual environment."
+        },
+        {
+          "id": "venv-module-available",
+          "type": "bool_fact",
+          "fact": "venv_module_available",
+          "message": "Python venv module availability",
+          "remedy": "Install python3-venv (or the equivalent package for your operating system). The setup script requires the venv module to create its virtual environment."
+        },
+        {
+          "id": "ensurepip-module-available",
+          "type": "bool_fact",
+          "fact": "ensurepip_module_available",
+          "message": "Python ensurepip module availability",
+          "remedy": "Install python3-ensurepip (or the equivalent package for your operating system). The setup script requires ensurepip to bootstrap pip inside its virtual environment."
+        },
+        {
+          "id": "podman-plugin-installed",
+          "type": "command_matches",
+          "command": [
+            "rpm",
+            "-qa"
+          ],
+          "pattern": "^podman-plugins",
+          "message": "Podman plugins package",
+          "remedy": "Run `yum install podman-plugins` and re-run this check -- required podman plugins are not installed.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          },
+          "not_verified_is_fatal": true
+        }
+      ]
+    },
+    "6.1.0": {
+      "checks": [
+        {
+          "id": "avx-support",
+          "type": "cpu_flag",
+          "flag": "avx",
+          "message": "CPU AVX instruction support",
+          "remedy": "CPU with AVX is required for CE service, please move to a host whose CPU supports this."
+        },
+        {
+          "id": "sizing-profile",
+          "type": "cpu_profile",
+          "message": "System sizing profile",
+          "profiles": [
+            {
+              "name": "Medium",
+              "cpu": 8,
+              "memory_gb": 16,
+              "disk_gb": 80,
+              "tolerance": 0.9
+            },
+            {
+              "name": "Large",
+              "cpu": 16,
+              "memory_gb": 32,
+              "disk_gb": 120,
+              "tolerance": 0.9
+            }
+          ],
+          "remedy": "CE sizing profiles are Medium (8 CPU / 16 GB RAM / 80 GB disk) and Large (16 CPU / 32 GB RAM / 120 GB disk). Align the machine to one of these exactly -- CPU counts outside this list are not a supported profile."
+        },
+        {
+          "id": "disk-free",
+          "type": "min_resource",
+          "fact": "deployment_disk.free_gb",
+          "minimum": 20,
+          "message": "Free disk on the deployment filesystem (GB)",
+          "remedy": "At least 20 GB must be free for images, volumes and upgrade staging. Free space or grow the filesystem."
+        },
+        {
+          "id": "var-disk-free",
+          "type": "min_resource",
+          "fact": "var_disk.free_gb",
+          "minimum": 20,
+          "warn_on_shortfall": true,
+          "message": "Free disk under /var (GB)",
+          "remedy": "Container images and logs live under /var. Free space there or grow the filesystem. Where /var is its own disk, a shortfall here can stall image pulls and logging even when the deployment filesystem is fine."
+        },
+        {
+          "id": "openssl-version",
+          "type": "version_min",
+          "fact": "openssl_version",
+          "minimum": "1.1.1",
+          "message": "OpenSSL version",
+          "remedy": "Upgrade OpenSSL to 1.1.1 or newer.",
+          "fail_if_missing": true
+        },
+        {
+          "id": "connectivity-docker-hub",
+          "type": "http_reachable",
+          "url": "https://hub.docker.com",
+          "message": "Connectivity to Docker Hub",
+          "remedy": "Verify network connectivity, proxy settings and firewall rules. CE cannot pull images without outbound HTTPS access.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-index",
+          "type": "http_reachable",
+          "url": "https://index.docker.io/v1/",
+          "message": "Connectivity to the Docker registry index",
+          "remedy": "Image pulls resolve through index.docker.io, not hub.docker.com. Allow outbound HTTPS to index.docker.io.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-registry",
+          "type": "http_reachable",
+          "url": "https://registry-1.docker.io/v2/",
+          "message": "Connectivity to the Docker registry endpoint",
+          "remedy": "Image layers are served from registry-1.docker.io. Allow outbound HTTPS to that host.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-archive",
+          "type": "port_reachable",
+          "message": "Ubuntu package archive",
+          "host": "archive.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-security",
+          "type": "port_reachable",
+          "message": "Ubuntu security archive",
+          "host": "security.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-keyserver",
+          "type": "port_reachable",
+          "message": "Ubuntu keyserver",
+          "host": "keyserver.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-ppa",
+          "type": "port_reachable",
+          "message": "Launchpad PPA (GlusterFS packages)",
+          "host": "ppa.launchpad.net",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-esm",
+          "type": "http_reachable",
+          "message": "Ubuntu ESM",
+          "url": "https://esm.ubuntu.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-cdn",
+          "type": "port_reachable",
+          "message": "Red Hat CDN",
+          "host": "cdn.redhat.com",
+          "port": 443,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-buildlogs",
+          "type": "http_reachable",
+          "message": "CentOS build logs",
+          "url": "https://buildlogs.centos.org",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-centos-cdn",
+          "type": "port_reachable",
+          "message": "CentOS CDN (GlusterFS packages)",
+          "host": "buildlogs.cdn.centos.org",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-mongo-downloads",
+          "type": "http_reachable",
+          "message": "MongoDB downloads",
+          "url": "https://downloads.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-docker-download",
+          "type": "http_reachable",
+          "message": "Docker package repository",
+          "url": "https://download.docker.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "vm-mongo-compass",
+          "type": "http_reachable",
+          "message": "MongoDB Compass",
+          "url": "https://compass.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "selinux-status",
+          "type": "command_matches",
+          "command": [
+            "sestatus"
+          ],
+          "pattern": "SELinux status:\\s+disabled",
+          "message": "SELinux status",
+          "remedy": "Disable SELinux for a successful Cloud Exchange deployment, or re-run installation with --ignore-failures once you understand the consequences.",
+          "applies_when": {
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-4369",
+          "type": "port_free",
+          "message": "RabbitMQ epmd port 4369",
+          "port": 4369,
+          "owner": "rabbitmq",
+          "remedy": "Free port 4369 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-5671",
+          "type": "port_free",
+          "message": "RabbitMQ AMQPS port 5671",
+          "port": 5671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 5671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-15671",
+          "type": "port_free",
+          "message": "RabbitMQ management port 15671",
+          "port": 15671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 15671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-25672",
+          "type": "port_free",
+          "message": "RabbitMQ clustering port 25672",
+          "port": 25672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 25672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-35672",
+          "type": "port_free",
+          "message": "RabbitMQ CLI port 35672",
+          "port": 35672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 35672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-glusterd",
+          "type": "port_free",
+          "message": "GlusterFS daemon port 24007",
+          "port": 24007,
+          "shared": "GlusterFS",
+          "remedy": "Port 24007 is in use. Confirm it is being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-gluster-bricks",
+          "type": "port_range_free",
+          "message": "GlusterFS brick ports 24009-24029",
+          "port_start": 24009,
+          "port_end": 24029,
+          "shared": "GlusterFS",
+          "timeout": 1,
+          "remedy": "These ports are reserved for GlusterFS bricks. Confirm they are being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-mongo",
+          "type": "port_free",
+          "message": "MongoDB port 27017",
+          "port": 27017,
+          "owner": "mongodb",
+          "remedy": "Free port 27017 or confirm it is already held by the intended CE MongoDB instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-peer-connectivity",
+          "type": "ha_peer_ports",
+          "message": "HA peer node connectivity",
+          "ports": [
+            4369,
+            5671,
+            15671,
+            25672,
+            35672,
+            27017,
+            24007,
+            24009,
+            24010,
+            24011,
+            24012,
+            24013,
+            24014,
+            24015,
+            24016,
+            24017,
+            24018,
+            24019,
+            24020,
+            24021,
+            24022,
+            24023,
+            24024,
+            24025,
+            24026,
+            24027,
+            24028,
+            24029
+          ],
+          "timeout": 2,
+          "remedy": "Please ensure all HA nodes are reachable from each other. Check firewall rules and security groups between the nodes.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "docker-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "28.4.0",
+          "message": "Container runtime version",
+          "remedy": "The minimum supported Docker version is 28.4.0. Upgrade the container runtime.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          }
+        },
+        {
+          "id": "container-runtime-detected",
+          "type": "runtime_detected",
+          "message": "Container runtime (Docker or Podman)",
+          "remedy": "Install Docker or Podman before proceeding. CE requires one of these container runtimes."
+        },
+        {
+          "id": "compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "2.39.4",
+          "message": "Docker Compose plugin version",
+          "remedy": "The minimum supported docker compose version is 2.39.4. Upgrade the compose plugin.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          }
+        },
+        {
+          "id": "podman-compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "1.5.0",
+          "message": "podman-compose version",
+          "remedy": "Minimum supported podman-compose is 1.5.0.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "fail_if_missing": true,
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "podman-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "4.9.0",
+          "recommended": "5.4.0",
+          "message": "Podman version",
+          "remedy": "Minimum supported Podman is 4.9.0; recommended is 5.4.0.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "os-supported",
+          "type": "os_supported",
+          "allowed": [
+            {
+              "id": "ubuntu",
+              "majors": [
+                "22"
+              ],
+              "minimum": "22.04"
+            },
+            {
+              "id": "ubuntu",
+              "majors": [
+                "24"
+              ],
+              "minimum": "24.04"
+            },
+            {
+              "id": "rhel",
+              "aliases": [
+                "redhat",
+                "rhel",
+                "red hat enterprise linux"
+              ],
+              "majors": [
+                "9"
+              ],
+              "minimum": "9.5"
+            }
+          ],
+          "message": "Host operating system",
+          "remedy": "Supported host operating systems are Ubuntu 22.04+ or 24.04+ and RHEL 9.5+. Migrate to a supported OS before installing or upgrading."
+        },
+        {
+          "id": "cevenv-python-drift",
+          "type": "version_min",
+          "fact": "venv_python_version",
+          "minimum": "3.11",
+          "message": "Python version in the CE virtual environment",
+          "remedy": "The existing virtual environment is built against an interpreter older than this Cloud Exchange version requires. Remove it so setup recreates it with a supported Python."
+        },
+        {
+          "id": "setup-sudo-python-version",
+          "type": "version_min",
+          "fact": "sudo_python3_version",
+          "minimum": "3.11",
+          "message": "Python version available to the setup script",
+          "remedy": "The setup script runs as 'sudo python3 ./setup' and exits immediately if that interpreter is older than the required version. Install a supported Python and make it the default for the root user before running setup."
+        },
+        {
+          "id": "mgmt-server-process-python-version",
+          "type": "python_version_drift",
+          "fact": "mgmt_server_process_python_version",
+          "minimum": "3.11",
+          "message": "Python version used by the running management server",
+          "remedy": "The running management server is using an older interpreter than this version requires, because the service started before the current environment took effect. Restart the service ('systemctl restart cloud-exchange') so it picks up the correct interpreter."
+        },
+        {
+          "id": "no-local-repo-changes",
+          "type": "command_output_empty",
+          "command": [
+            "git",
+            "diff",
+            "-G."
+          ],
+          "cwd": "{deployment_dir}",
+          "message": "Local changes in the deployment directory",
+          "remedy": "The setup script cannot proceed while the deployment directory has uncommitted local changes. Remove or stash the local changes before upgrading.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "ui-port",
+          "type": "port_free",
+          "message": "UI port 443",
+          "port": 443,
+          "owner": "ui",
+          "remedy": "Free port 443 or confirm it is already held by the intended CE UI container.",
+          "timeout": 1
+        },
+        {
+          "id": "management-port",
+          "type": "port_free",
+          "message": "Management service port 8000",
+          "port": 8000,
+          "owner": "management",
+          "remedy": "Free port 8000 or confirm it is already held by the intended CE management service.",
+          "timeout": 1
+        },
+        {
+          "id": "pip-available",
+          "type": "bool_fact",
+          "fact": "pip_available",
+          "message": "Python pip module availability",
+          "remedy": "Install python3-pip (or the equivalent package for your operating system). The setup script requires pip to create its virtual environment."
+        },
+        {
+          "id": "venv-module-available",
+          "type": "bool_fact",
+          "fact": "venv_module_available",
+          "message": "Python venv module availability",
+          "remedy": "Install python3-venv (or the equivalent package for your operating system). The setup script requires the venv module to create its virtual environment."
+        },
+        {
+          "id": "ensurepip-module-available",
+          "type": "bool_fact",
+          "fact": "ensurepip_module_available",
+          "message": "Python ensurepip module availability",
+          "remedy": "Install python3-ensurepip (or the equivalent package for your operating system). The setup script requires ensurepip to bootstrap pip inside its virtual environment."
+        },
+        {
+          "id": "podman-plugin-installed",
+          "type": "command_matches",
+          "command": [
+            "rpm",
+            "-qa"
+          ],
+          "pattern": "^podman-plugins",
+          "message": "Podman plugins package",
+          "remedy": "Run `yum install podman-plugins` and re-run this check -- required podman plugins are not installed.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          },
+          "not_verified_is_fatal": true
+        }
+      ]
+    },
+    "7.0.0": {
+      "checks": [
+        {
+          "id": "avx-support",
+          "type": "cpu_flag",
+          "flag": "avx",
+          "message": "CPU AVX instruction support",
+          "remedy": "CPU with AVX is required for CE service, please move to a host whose CPU supports this."
+        },
+        {
+          "id": "sizing-profile",
+          "type": "cpu_profile",
+          "message": "System sizing profile",
+          "profiles": [
+            {
+              "name": "Medium",
+              "cpu": 8,
+              "memory_gb": 16,
+              "disk_gb": 80,
+              "tolerance": 0.9
+            },
+            {
+              "name": "Large",
+              "cpu": 16,
+              "memory_gb": 32,
+              "disk_gb": 120,
+              "tolerance": 0.9
+            }
+          ],
+          "remedy": "CE sizing profiles are Medium (8 CPU / 16 GB RAM / 80 GB disk) and Large (16 CPU / 32 GB RAM / 120 GB disk). Align the machine to one of these exactly -- CPU counts outside this list are not a supported profile."
+        },
+        {
+          "id": "disk-free",
+          "type": "min_resource",
+          "fact": "deployment_disk.free_gb",
+          "minimum": 20,
+          "message": "Free disk on the deployment filesystem (GB)",
+          "remedy": "At least 20 GB must be free for images, volumes and upgrade staging. Free space or grow the filesystem."
+        },
+        {
+          "id": "var-disk-free",
+          "type": "min_resource",
+          "fact": "var_disk.free_gb",
+          "minimum": 20,
+          "warn_on_shortfall": true,
+          "message": "Free disk under /var (GB)",
+          "remedy": "Container images and logs live under /var. Free space there or grow the filesystem. Where /var is its own disk, a shortfall here can stall image pulls and logging even when the deployment filesystem is fine."
+        },
+        {
+          "id": "openssl-version",
+          "type": "version_min",
+          "fact": "openssl_version",
+          "minimum": "1.1.1",
+          "message": "OpenSSL version",
+          "remedy": "Upgrade OpenSSL to 1.1.1 or newer.",
+          "fail_if_missing": true
+        },
+        {
+          "id": "connectivity-docker-hub",
+          "type": "http_reachable",
+          "url": "https://hub.docker.com",
+          "message": "Connectivity to Docker Hub",
+          "remedy": "Verify network connectivity, proxy settings and firewall rules. CE cannot pull images without outbound HTTPS access.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-index",
+          "type": "http_reachable",
+          "url": "https://index.docker.io/v1/",
+          "message": "Connectivity to the Docker registry index",
+          "remedy": "Image pulls resolve through index.docker.io, not hub.docker.com. Allow outbound HTTPS to index.docker.io.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "connectivity-docker-registry",
+          "type": "http_reachable",
+          "url": "https://registry-1.docker.io/v2/",
+          "message": "Connectivity to the Docker registry endpoint",
+          "remedy": "Image layers are served from registry-1.docker.io. Allow outbound HTTPS to that host.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-archive",
+          "type": "port_reachable",
+          "message": "Ubuntu package archive",
+          "host": "archive.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-security",
+          "type": "port_reachable",
+          "message": "Ubuntu security archive",
+          "host": "security.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-keyserver",
+          "type": "port_reachable",
+          "message": "Ubuntu keyserver",
+          "host": "keyserver.ubuntu.com",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-ppa",
+          "type": "port_reachable",
+          "message": "Launchpad PPA (GlusterFS packages)",
+          "host": "ppa.launchpad.net",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-ubuntu-esm",
+          "type": "http_reachable",
+          "message": "Ubuntu ESM",
+          "url": "https://esm.ubuntu.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "ubuntu"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-cdn",
+          "type": "port_reachable",
+          "message": "Red Hat CDN",
+          "host": "cdn.redhat.com",
+          "port": 443,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-buildlogs",
+          "type": "http_reachable",
+          "message": "CentOS build logs",
+          "url": "https://buildlogs.centos.org",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-centos-cdn",
+          "type": "port_reachable",
+          "message": "CentOS CDN (GlusterFS packages)",
+          "host": "buildlogs.cdn.centos.org",
+          "port": 80,
+          "timeout": 5,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-rhel-mongo-downloads",
+          "type": "http_reachable",
+          "message": "MongoDB downloads",
+          "url": "https://downloads.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "vm-docker-download",
+          "type": "http_reachable",
+          "message": "Docker package repository",
+          "url": "https://download.docker.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "vm-mongo-compass",
+          "type": "http_reachable",
+          "message": "MongoDB Compass",
+          "url": "https://compass.mongodb.com",
+          "timeout": 15,
+          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
+          "applies_when": {
+            "is_vm": [
+              true
+            ]
+          }
+        },
+        {
+          "id": "selinux-status",
+          "type": "command_matches",
+          "command": [
+            "sestatus"
+          ],
+          "pattern": "SELinux status:\\s+disabled",
+          "message": "SELinux status",
+          "remedy": "Disable SELinux for a successful Cloud Exchange deployment, or re-run installation with --ignore-failures once you understand the consequences.",
+          "applies_when": {
+            "os_id": [
+              "rhel"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-4369",
+          "type": "port_free",
+          "message": "RabbitMQ epmd port 4369",
+          "port": 4369,
+          "owner": "rabbitmq",
+          "remedy": "Free port 4369 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-5671",
+          "type": "port_free",
+          "message": "RabbitMQ AMQPS port 5671",
+          "port": 5671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 5671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-15671",
+          "type": "port_free",
+          "message": "RabbitMQ management port 15671",
+          "port": 15671,
+          "owner": "rabbitmq",
+          "remedy": "Free port 15671 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-25672",
+          "type": "port_free",
+          "message": "RabbitMQ clustering port 25672",
+          "port": 25672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 25672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-35672",
+          "type": "port_free",
+          "message": "RabbitMQ CLI port 35672",
+          "port": 35672,
+          "owner": "rabbitmq",
+          "remedy": "Free port 35672 or confirm it is already held by the intended CE RabbitMQ instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-glusterd",
+          "type": "port_free",
+          "message": "GlusterFS daemon port 24007",
+          "port": 24007,
+          "shared": "GlusterFS",
+          "remedy": "Port 24007 is in use. Confirm it is being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-port-gluster-bricks",
+          "type": "port_range_free",
+          "message": "GlusterFS brick ports 24009-24029",
+          "port_start": 24009,
+          "port_end": 24029,
+          "shared": "GlusterFS",
+          "timeout": 1,
+          "remedy": "These ports are reserved for GlusterFS bricks. Confirm they are being used by GlusterFS and not another service.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "ha-port-mongo",
+          "type": "port_free",
+          "message": "MongoDB port 27017",
+          "port": 27017,
+          "owner": "mongodb",
+          "remedy": "Free port 27017 or confirm it is already held by the intended CE MongoDB instance.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          },
+          "timeout": 1
+        },
+        {
+          "id": "ha-peer-connectivity",
+          "type": "ha_peer_ports",
+          "message": "HA peer node connectivity",
+          "ports": [
+            4369,
+            5671,
+            15671,
+            25672,
+            35672,
+            27017,
+            24007,
+            24009,
+            24010,
+            24011,
+            24012,
+            24013,
+            24014,
+            24015,
+            24016,
+            24017,
+            24018,
+            24019,
+            24020,
+            24021,
+            24022,
+            24023,
+            24024,
+            24025,
+            24026,
+            24027,
+            24028,
+            24029
+          ],
+          "timeout": 2,
+          "remedy": "Please ensure all HA nodes are reachable from each other. Check firewall rules and security groups between the nodes.",
+          "applies_when": {
+            "deployment": [
+              "HA"
+            ]
+          }
+        },
+        {
+          "id": "docker-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "28.4.0",
+          "message": "Container runtime version",
+          "remedy": "The minimum supported Docker version is 28.4.0. Upgrade the container runtime.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          }
+        },
+        {
+          "id": "container-runtime-detected",
+          "type": "runtime_detected",
+          "message": "Container runtime (Docker or Podman)",
+          "remedy": "Install Docker or Podman before proceeding. CE requires one of these container runtimes."
+        },
+        {
+          "id": "compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "2.39.4",
+          "message": "Docker Compose plugin version",
+          "remedy": "The minimum supported docker compose version is 2.39.4. Upgrade the compose plugin.",
+          "applies_when": {
+            "detected_runtime": [
+              "docker"
+            ]
+          }
+        },
+        {
+          "id": "podman-compose-version",
+          "type": "version_min",
+          "fact": "runtime.compose_version",
+          "minimum": "1.5.0",
+          "message": "podman-compose version",
+          "remedy": "Minimum supported podman-compose is 1.5.0.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "fail_if_missing": true,
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "podman-version",
+          "type": "version_min",
+          "fact": "runtime.runtime_version",
+          "minimum": "4.9.0",
+          "recommended": "5.4.0",
+          "message": "Podman version",
+          "remedy": "Minimum supported Podman is 4.9.0; recommended is 5.4.0.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ]
+          },
+          "not_verified_is_fatal": true
+        },
+        {
+          "id": "os-supported",
+          "type": "os_supported",
+          "allowed": [
+            {
+              "id": "ubuntu",
+              "majors": [
+                "24"
+              ],
+              "minimum": "24.04"
+            },
+            {
+              "id": "rhel",
+              "aliases": [
+                "redhat",
+                "rhel",
+                "red hat enterprise linux"
+              ],
+              "majors": [
+                "9"
+              ],
+              "minimum": "9.5"
+            }
+          ],
+          "message": "Host operating system",
+          "remedy": "Supported host operating systems are Ubuntu 24.x (24.04+) and RHEL 9.x (9.5+). Migrate to a supported OS before installing or upgrading."
+        },
+        {
+          "id": "cevenv-python-drift",
+          "type": "version_min",
+          "fact": "venv_python_version",
+          "minimum": "3.12",
+          "message": "Python version in the CE virtual environment",
+          "remedy": "The existing virtual environment is built against an interpreter older than this Cloud Exchange version requires. Remove it so setup recreates it with a supported Python."
+        },
+        {
+          "id": "setup-sudo-python-version",
+          "type": "version_min",
+          "fact": "sudo_python3_version",
+          "minimum": "3.12",
+          "message": "Python version available to the setup script",
+          "remedy": "The setup script runs as 'sudo python3 ./setup' and exits immediately if that interpreter is older than the required version. Install a supported Python and make it the default for the root user before running setup."
+        },
+        {
+          "id": "mgmt-server-process-python-version",
+          "type": "python_version_drift",
+          "fact": "mgmt_server_process_python_version",
+          "minimum": "3.12",
+          "message": "Python version used by the running management server",
+          "remedy": "The running management server is using an older interpreter than this version requires, because the service started before the current environment took effect. Restart the service ('systemctl restart cloud-exchange') so it picks up the correct interpreter."
+        },
+        {
+          "id": "no-local-repo-changes",
+          "type": "command_output_empty",
+          "command": [
+            "git",
+            "diff",
+            "-G."
+          ],
+          "cwd": "{deployment_dir}",
+          "message": "Local changes in the deployment directory",
+          "remedy": "The setup script cannot proceed while the deployment directory has uncommitted local changes. Remove or stash the local changes before upgrading.",
+          "applies_when": {
+            "is_vm": [
+              false
+            ]
+          }
+        },
+        {
+          "id": "ui-port",
+          "type": "port_free",
+          "message": "UI port 443",
+          "port": 443,
+          "owner": "ui",
+          "remedy": "Free port 443 or confirm it is already held by the intended CE UI container.",
+          "timeout": 1
+        },
+        {
+          "id": "management-port",
+          "type": "port_free",
+          "message": "Management service port 8000",
+          "port": 8000,
+          "owner": "management",
+          "remedy": "Free port 8000 or confirm it is already held by the intended CE management service.",
+          "timeout": 1
+        },
+        {
+          "id": "pip-available",
+          "type": "bool_fact",
+          "fact": "pip_available",
+          "message": "Python pip module availability",
+          "remedy": "Install python3-pip (or the equivalent package for your operating system). The setup script requires pip to create its virtual environment."
+        },
+        {
+          "id": "venv-module-available",
+          "type": "bool_fact",
+          "fact": "venv_module_available",
+          "message": "Python venv module availability",
+          "remedy": "Install python3-venv (or the equivalent package for your operating system). The setup script requires the venv module to create its virtual environment."
+        },
+        {
+          "id": "ensurepip-module-available",
+          "type": "bool_fact",
+          "fact": "ensurepip_module_available",
+          "message": "Python ensurepip module availability",
+          "remedy": "Install python3-ensurepip (or the equivalent package for your operating system). The setup script requires ensurepip to bootstrap pip inside its virtual environment."
+        },
+        {
+          "id": "podman-plugin-installed",
+          "type": "command_matches",
+          "command": [
+            "rpm",
+            "-qa"
+          ],
+          "pattern": "^podman-plugins",
+          "message": "Podman plugins package",
+          "remedy": "Run `yum install podman-plugins` and re-run this check -- required podman plugins are not installed.",
+          "applies_when": {
+            "detected_runtime": [
+              "podman"
+            ],
+            "os_id": [
+              "rhel"
+            ]
+          },
+          "not_verified_is_fatal": true
+        }
+      ]
+    }
+  }
+}

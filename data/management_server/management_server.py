@@ -3,6 +3,7 @@
 
 import re
 import base64
+import shlex
 import fcntl
 import hashlib
 import hmac
@@ -5714,6 +5715,874 @@ def system_stats(handler):
             ha_stats[ip] = response[0]
 
     return ha_stats, 200
+
+
+
+
+# ==========================================================================
+# Pre-flight health check -- mirrors the diagnose implementation above:
+# async job, per-node HTTPS fan-out in HA, merged downloadable report.
+# ==========================================================================
+
+HEALTHCHECK_OUTPUT_DIR_DEFAULT = "./data/healthcheck_output"
+HEALTHCHECK_SCRIPT = "./ce_healthcheck"
+
+# Always `sudo python3 ./ce_healthcheck`, never `{SUDO_PREFIX} ./ce_healthcheck`.
+# When this server is already root, SUDO_PREFIX is empty and a bare
+# invocation resolves python3 via the shebang from the SERVICE's PATH, not
+# sudo's secure_path -- which is what `sudo python3 ./setup` uses. Confirmed
+# on a host where those differ (3.12 vs 3.11), flipping a real FAIL to PASS.
+HEALTHCHECK_INVOCATION = f"sudo python3 {HEALTHCHECK_SCRIPT}"
+CURRENT_HEALTHCHECK_JOB = None
+_healthcheck_job_lock = threading.Lock()
+
+# The script is a pre-flight check for an upgrade; the UI only exists on a
+# host that already has Cloud Exchange installed, so "install" is not a
+# reachable state from there.
+HEALTHCHECK_MODE = "upgrade"
+
+# Must match before the shell command is built -- parse_version() runs too
+# late to help, since shell=True has already executed by then. Covers real
+# CE version shapes (7.0.0-beta.1, 5.1.1-dlp-beta-1) and rejects anything
+# starting with "-" so a value can't be read as another flag.
+HEALTHCHECK_VERSION_RE = re.compile(
+    r"^[vV]?[0-9]+(\.[0-9]+){0,3}([-_.][0-9A-Za-z]+)*$")
+HEALTHCHECK_DEPLOYMENTS = ("SA", "HA")
+
+
+def _validate_healthcheck_params(deployment, target_version):
+    """Error string, or None. Shared by both healthcheck routes so the
+    internal one can't be looser than the UI-facing one."""
+    if deployment not in HEALTHCHECK_DEPLOYMENTS:
+        return "deployment must be 'SA' or 'HA'"
+    if not target_version:
+        return "target_version is required"
+    if not HEALTHCHECK_VERSION_RE.match(str(target_version)):
+        return "target_version is not a valid Cloud Exchange version string"
+    return None
+
+
+def _read_json_body(handler):
+    """Parse a JSON request body, tolerating an empty one."""
+    try:
+        content_length = int(handler.headers.get("Content-Length", 0))
+        if not content_length:
+            return {}
+        data = json.loads(handler.rfile.read(content_length).decode())
+        # A non-dict body (e.g. a JSON array) is truthy but has no .get(),
+        # which surfaced as a 500 instead of a 400.
+        return data if isinstance(data, dict) else {}
+    except (ValueError, json.JSONDecodeError):
+        return {}
+
+
+def _get_healthcheck_output_dir():
+    """Shared NFS directory in HA, local directory otherwise.
+
+    Same derivation as _get_diagnose_output_dir(), so a job started on one
+    node is visible to the others.
+    """
+    shared_dir_base_path = "/".join(
+        (AVAILABLE_INPUTS.get("HA_NFS_DATA_DIRECTORY", "").strip().rstrip("/").split("/"))[:-1]
+    )
+    if shared_dir_base_path:
+        output_dir = os.path.join(shared_dir_base_path, "data", "healthcheck_output")
+    else:
+        output_dir = HEALTHCHECK_OUTPUT_DIR_DEFAULT
+    logger.debug(f"Health check directory: {output_dir}")
+    return output_dir
+
+
+def _healthcheck_job_metadata_path(job_id, output_dir=None):
+    if output_dir is None:
+        output_dir = _get_healthcheck_output_dir()
+    return os.path.join(output_dir, f".healthcheck_job_{job_id}.json")
+
+
+def _save_healthcheck_job_metadata(job_data, output_dir=None):
+    """Persist job state so other HA nodes (and a restarted server) see it."""
+    try:
+        if output_dir is None:
+            output_dir = _get_healthcheck_output_dir()
+        os.makedirs(output_dir, exist_ok=True)
+        path = _healthcheck_job_metadata_path(job_data["job_id"], output_dir)
+        with open(path, "w") as handle:
+            json.dump(job_data, handle)
+        return True
+    except Exception as e:
+        logger.error(
+            f"Failed to save health check job metadata: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        return False
+
+
+def _load_healthcheck_job_metadata(job_id, output_dir=None):
+    try:
+        if output_dir is None:
+            output_dir = _get_healthcheck_output_dir()
+        path = _healthcheck_job_metadata_path(job_id, output_dir)
+        if not os.path.exists(path):
+            return None
+        with open(path) as handle:
+            return json.load(handle)
+    except Exception as e:
+        logger.error(
+            f"Failed to load health check job metadata: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        return None
+
+
+def _cleanup_all_healthcheck_files(output_dir=None, exclude_job_id=None):
+    """Remove previous health check job artifacts, keeping one run's worth.
+
+    Mirrors _cleanup_all_diagnose_files(): the run entry point refuses to
+    start while a job is running, so only one job's files are ever live.
+    Without this, every run left its metadata, JSON and HTML behind for good.
+    """
+    try:
+        if output_dir is None:
+            output_dir = _get_healthcheck_output_dir()
+        if not os.path.exists(output_dir):
+            return
+
+        for filename in os.listdir(output_dir):
+            is_meta = (filename.startswith(".healthcheck_job_")
+                       and filename.endswith(".json"))
+            is_payloads = (filename.startswith(".healthcheck_payloads_")
+                           and filename.endswith(".json"))
+            is_report = (filename.startswith("ce_healthcheck_")
+                         and filename.endswith((".json", ".html")))
+            if not (is_meta or is_payloads or is_report):
+                continue
+            if exclude_job_id and exclude_job_id in filename:
+                continue
+            try:
+                os.remove(os.path.join(output_dir, filename))
+                logger.info(f"Cleaned up old health check file: {filename}",
+                            extra={"node": utils.NODE_IP})
+            except Exception as e:
+                logger.warning(f"Failed to cleanup {filename}: {e}",
+                               extra={"node": utils.NODE_IP})
+    except Exception as e:
+        logger.warning(f"Health check cleanup failed: {e}",
+                       extra={"node": utils.NODE_IP})
+
+
+def _fail_if_orphaned(job):
+    """Report a persisted "running" job as failed -- it cannot still be live.
+
+    Only reached when nothing is in memory, and the worker is a thread of
+    this process: a job still running would have been in CURRENT_HEALTHCHECK_JOB.
+    So a "running" status read back from disk always means the server that
+    owned it is gone. Deliberately not keyed on the recorded server_pid --
+    PIDs are reused, and the in-memory check above is the stronger signal.
+    """
+    if not isinstance(job, dict) or job.get("status") != "running":
+        return job
+    job["status"] = "failed"
+    job["message"] = "Health check interrupted"
+    job["error"] = (
+        "The management server restarted while this health check was "
+        "running. Run it again."
+    )
+    return job
+
+
+def _recover_healthcheck_job_state(job_id=None):
+    """Load the newest persisted job from disk when nothing is in memory
+    (e.g. after a server restart). Mirrors _recover_diagnose_job_state()."""
+    global CURRENT_HEALTHCHECK_JOB
+    try:
+        output_dir = _get_healthcheck_output_dir()
+        if job_id:
+            recovered = _load_healthcheck_job_metadata(job_id, output_dir)
+            if recovered:
+                recovered = _fail_if_orphaned(recovered)
+                CURRENT_HEALTHCHECK_JOB = recovered
+            return recovered
+
+        if not os.path.isdir(output_dir):
+            return None
+        candidates = [
+            os.path.join(output_dir, name)
+            for name in os.listdir(output_dir)
+            if name.startswith(".healthcheck_job_") and name.endswith(".json")
+        ]
+        if not candidates:
+            return None
+        newest = max(candidates, key=os.path.getmtime)
+        with open(newest) as handle:
+            recovered = json.load(handle)
+        recovered = _fail_if_orphaned(recovered)
+        CURRENT_HEALTHCHECK_JOB = recovered
+        return recovered
+    except Exception as e:
+        logger.error(
+            f"Failed to recover health check job state: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        return None
+
+
+def _update_healthcheck_job(updates):
+    """Update the in-memory job and persist it in one step."""
+    global CURRENT_HEALTHCHECK_JOB
+    with _healthcheck_job_lock:
+        if CURRENT_HEALTHCHECK_JOB is None:
+            return
+        CURRENT_HEALTHCHECK_JOB.update(updates)
+        _save_healthcheck_job_metadata(CURRENT_HEALTHCHECK_JOB)
+
+
+def _run_local_healthcheck(deployment, target_version, manifest_url=None):
+    """Run ./ce_healthcheck on this node and return its parsed JSON report.
+
+    Exit-code contract -- this is the part that is easy to get wrong:
+        0  every check passed
+        1  the run succeeded and one or more checks FAILED
+        2  the check definitions could not be obtained; nothing ran
+
+    Exit 1 is a normal, complete result: it is the answer "this host is not
+    ready", and its report is fully populated. Only 2 (or unparseable
+    output) is an actual error. Treating any non-zero code as a failure --
+    which is what _run_local_diagnose does, correctly, for diagnose -- would
+    turn every genuinely-unready host into a server error.
+
+    Returns:
+        tuple: (success: bool, result: dict|str)
+    """
+    # shlex.quote every interpolated value, not just the URL -- deployment
+    # and target_version previously reached shell=True unquoted (RCE as root).
+    command = (
+        f"{HEALTHCHECK_INVOCATION} --quiet --json "
+        f"--mode {shlex.quote(HEALTHCHECK_MODE)} "
+        f"--deployment {shlex.quote(str(deployment))} "
+        f"--target-version {shlex.quote(str(target_version))}"
+    )
+    if manifest_url:
+        command = f"{command} --manifest-url {shlex.quote(str(manifest_url))}"
+
+    logger.info(f"Running health check: {command}", extra={"node": utils.NODE_IP})
+
+    stdout_chunks = []
+    stderr_output = []
+    return_code = 0
+    try:
+        for message in execute_command(command, shell=True):
+            msg_type = message.get("type", "")
+            if msg_type == "stdout":
+                stdout_chunks.append(message.get("message", ""))
+            elif msg_type == "stderr":
+                content = message.get("message", "").strip()
+                if content:
+                    stderr_output.append(content)
+            elif msg_type == "returncode":
+                return_code = message.get("code", 0)
+    except Exception as e:
+        logger.error(f"Error running health check: {e}", extra={"node": utils.NODE_IP})
+        return False, f"Error running health check: {e}"
+
+    raw = "".join(stdout_chunks).strip()
+
+    if return_code not in (0, 1):
+        # Exit 2 explains itself in a JSON object on STDOUT, not stderr --
+        # falling back to stderr alone would report "Unknown error".
+        detail = ""
+        try:
+            failure = json.loads(raw)
+            if isinstance(failure, dict):
+                detail = failure.get("error") or ""
+                if failure.get("detail"):
+                    detail = f"{detail} {failure['detail']}".strip()
+        except ValueError:
+            pass
+        if not detail:
+            detail = "; ".join(stderr_output) if stderr_output else "Unknown error"
+        return False, (
+            f"Health check could not run (exit {return_code}): {detail}"
+        )
+    try:
+        payload = json.loads(raw)
+    except ValueError as e:
+        logger.error(
+            f"Health check output was not valid JSON: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        return False, "Health check produced no readable report"
+
+    return True, payload
+
+
+def _collect_remote_healthcheck(node_ip, auth_header, deployment, target_version,
+                                manifest_url=None):
+    """Run the health check on a peer node and return its report.
+
+    Node-to-node HTTPS carrying the caller's own auth header, exactly as
+    _collect_remote_diagnose does -- no SSH, no additional credentials.
+    """
+    try:
+        payload_body = {"deployment": deployment,
+                        "target_version": target_version}
+        if manifest_url:
+            payload_body["manifest_url"] = manifest_url
+
+        for response in check_management_server(
+            node_ip=node_ip,
+            handler=None,
+            auth_header=auth_header,
+            endpoint="/api/management/run-healthcheck-node",
+            method="POST",
+            protocol="https",
+            should_stream=False,
+            payload=payload_body,
+        ):
+            if isinstance(response, tuple) and len(response) >= 2:
+                payload, status = response[0], response[1]
+                if status == 200 and isinstance(payload, dict):
+                    return True, payload
+                detail = (
+                    payload.get("detail")
+                    if isinstance(payload, dict)
+                    else str(payload)
+                )
+                return False, detail or f"HTTP {status}"
+            if isinstance(response, dict):
+                return True, response
+            break
+    except Exception as e:
+        logger.error(
+            f"Failed to collect health check from {node_ip}: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        return False, str(e)
+
+    return False, "No response from node"
+
+
+def _merge_healthcheck_summaries(nodes):
+    """Cluster-wide totals plus a per-node breakdown.
+
+    Unreachable nodes are counted separately and never folded into the
+    healthy totals: a node that was not checked must not be able to make a
+    partial run look like a clean one.
+    """
+    totals = {
+        "total": 0, "passed": 0, "warned": 0,
+        "failed": 0, "skipped": 0, "not_verified": 0,
+    }
+    nodes_summary = []
+    for entry in nodes:
+        node_ip = entry.get("node")
+        if entry.get("unreachable"):
+            nodes_summary.append({
+                "node": node_ip,
+                "reachable": False,
+                "error": entry.get("error"),
+            })
+            continue
+        summary = (entry.get("payload") or {}).get("summary") or {}
+        for key in totals:
+            totals[key] += summary.get(key, 0)
+        nodes_summary.append({
+            "node": node_ip,
+            "reachable": True,
+            "summary": summary,
+        })
+
+    unreachable = [n for n in nodes_summary if not n["reachable"]]
+    return {
+        "totals": totals,
+        "nodes": nodes_summary,
+        "nodes_checked": len(nodes_summary) - len(unreachable),
+        "nodes_unreachable": len(unreachable),
+    }
+
+
+def _write_healthcheck_reports(job_id, nodes, output_dir):
+    """Write the merged JSON, and render the merged HTML via the script.
+
+    The HTML is rendered by ce_healthcheck itself (--render-html) rather
+    than here: the report renderer lives inside that single self-contained
+    file, which is the only piece of the health check that ships, so there
+    is no importable module to call.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    json_path = os.path.join(output_dir, f"ce_healthcheck_{job_id}.json")
+    html_path = os.path.join(output_dir, f"ce_healthcheck_{job_id}.html")
+
+    document = {
+        "job_id": job_id,
+        "summary": _merge_healthcheck_summaries(nodes),
+        "nodes": nodes,
+    }
+    with open(json_path, "w") as handle:
+        json.dump(document, handle, indent=2, default=str)
+
+    payload_path = os.path.join(output_dir, f".healthcheck_payloads_{job_id}.json")
+    with open(payload_path, "w") as handle:
+        json.dump({"nodes": nodes}, handle, default=str)
+
+    # Server-derived paths, but still reach shell=True -- quoted regardless.
+    command = (
+        f"{HEALTHCHECK_INVOCATION} "
+        f"--render-html {shlex.quote(payload_path)} "
+        f"--html {shlex.quote(html_path)}"
+    )
+    return_code = 0
+    try:
+        for message in execute_command(command, shell=True):
+            if message.get("type") == "returncode":
+                return_code = message.get("code", 0)
+    except Exception as e:
+        logger.error(
+            f"Failed to render health check HTML: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        return_code = 1
+    finally:
+        try:
+            os.remove(payload_path)
+        except OSError:
+            pass
+
+    if return_code != 0 or not os.path.exists(html_path):
+        logger.warning(
+            "Health check HTML rendering failed; JSON report is still available",
+            extra={"node": utils.NODE_IP},
+        )
+        html_path = None
+
+    return json_path, html_path
+
+
+def _run_healthcheck_worker(job_id, auth_header, is_ha_mode, ha_ip_list,
+                            deployment, target_version, manifest_url=None):
+    """Background worker: run locally, fan out in HA, merge, write reports."""
+    try:
+        nodes = []
+        # Same resolution as _run_diagnose_worker: utils.NODE_IP is only
+        # assigned during HA setup, so prefer the env HA_CURRENT_NODE. This
+        # value decides which node counts as local, so getting it wrong
+        # makes this node fan out to itself and skip a real peer.
+        current_node_ip = AVAILABLE_INPUTS.get("HA_CURRENT_NODE", "").strip() or (
+            utils.NODE_IP.strip() if utils.NODE_IP else ""
+        )
+
+        _update_healthcheck_job({"message": "Running checks on this node..."})
+        success, result = _run_local_healthcheck(
+            deployment, target_version, manifest_url)
+        if not success:
+            _update_healthcheck_job({
+                "status": "failed",
+                "message": "Health check failed",
+                "error": result,
+            })
+            return
+
+        nodes.append({
+            "node": current_node_ip,
+            "label": f"Node {current_node_ip}" if current_node_ip else "This node",
+            "payload": result,
+        })
+
+        if is_ha_mode:
+            all_ips = [ip.strip() for ip in ha_ip_list.split(",") if ip.strip()]
+            peers = [ip for ip in all_ips if ip != current_node_ip]
+            for index, node_ip in enumerate(peers, start=1):
+                _update_healthcheck_job({
+                    "message": f"Collecting from node {index} of {len(peers)}...",
+                })
+                ok, peer_result = _collect_remote_healthcheck(
+                    node_ip, auth_header, deployment, target_version,
+                    manifest_url)
+                if ok:
+                    nodes.append({
+                        "node": node_ip,
+                        "label": f"Node {node_ip}",
+                        "payload": peer_result,
+                    })
+                else:
+                    # Skip, do not abort -- matching _run_diagnose_worker. The
+                    # node is still recorded so the report can show it was not
+                    # checked rather than omitting it silently.
+                    logger.warning(
+                        f"Health check: {node_ip} unreachable (skipped): {peer_result}",
+                        extra={"node": utils.NODE_IP},
+                    )
+                    nodes.append({
+                        "node": node_ip,
+                        "label": f"Node {node_ip}",
+                        "unreachable": True,
+                        "error": f"Management server unreachable (skipped): {peer_result}",
+                    })
+
+        _update_healthcheck_job({"message": "Building report..."})
+        output_dir = _get_healthcheck_output_dir()
+        json_path, html_path = _write_healthcheck_reports(job_id, nodes, output_dir)
+
+        summary = _merge_healthcheck_summaries(nodes)
+        _update_healthcheck_job({
+            "status": "completed",
+            "message": "Health check completed",
+            "json_path": json_path,
+            "html_path": html_path,
+            "summary": summary,
+            "error": None,
+        })
+        logger.info(
+            f"Health check job {job_id} completed "
+            f"({summary['nodes_checked']} node(s) checked, "
+            f"{summary['nodes_unreachable']} unreachable)",
+            extra={"node": utils.NODE_IP},
+        )
+    except Exception as e:
+        logger.error(
+            f"Health check job {job_id} failed: {e}",
+            extra={"node": utils.NODE_IP},
+        )
+        _update_healthcheck_job({
+            "status": "failed",
+            "message": "Health check failed",
+            "error": str(e),
+        })
+
+
+@SimpleAPIServer.route("/run-healthcheck", methods=["POST"], scopes=[ADMIN_ROLE])
+def run_healthcheck(handler):
+    """Start a pre-flight health check. Returns a job_id immediately.
+
+    Body (all optional; sensible defaults are derived from this host):
+        {"deployment": "SA"|"HA", "target_version": "7.0.0",
+         "manifest_url": "https://..."}
+
+    In HA this runs on every reachable node and merges the results. Nodes
+    that cannot be reached are skipped and reported as unreachable rather
+    than failing the job.
+    """
+    global CURRENT_HEALTHCHECK_JOB
+    logger.info("Health check API called", extra={"node": utils.NODE_IP})
+
+    success, error_msg = load_environment_from_multiple_sources(handler)
+    if not success:
+        return _send_json_error_response(
+            handler, f"Error loading environment: {error_msg}", 500)
+
+    body = _read_json_body(handler)
+
+    ha_ip_list = AVAILABLE_INPUTS.get("HA_IP_LIST", "")
+    is_ha_mode = bool(ha_ip_list and len(ha_ip_list.strip().split(",")) > 1)
+
+    deployment = body.get("deployment") or ("HA" if is_ha_mode else "SA")
+    target_version = body.get("target_version")
+    param_error = _validate_healthcheck_params(deployment, target_version)
+    if param_error:
+        return _send_json_error_response(handler, param_error, 400)
+
+    manifest_url = body.get("manifest_url")
+
+    with _healthcheck_job_lock:
+        if CURRENT_HEALTHCHECK_JOB and CURRENT_HEALTHCHECK_JOB.get("status") == "running":
+            return {
+                "job_id": CURRENT_HEALTHCHECK_JOB["job_id"],
+                "status": "running",
+                "message": "Health check already in progress",
+            }, 200
+
+        job_id = str(uuid.uuid4())
+        auth_header = handler.headers.get("Authorization")
+
+        CURRENT_HEALTHCHECK_JOB = {
+            "job_id": job_id,
+            "status": "running",
+            "message": "Starting health check...",
+            "json_path": None,
+            "html_path": None,
+            "summary": None,
+            "error": None,
+            "deployment": deployment,
+            "target_version": target_version,
+            # Recorded for diagnostics, and for a future orphan reaper to
+            # gate on. Not consulted by _fail_if_orphaned(), which has a
+            # stronger signal -- see its docstring.
+            "server_pid": os.getpid(),
+            "started_at": time.time(),
+        }
+        output_dir = _get_healthcheck_output_dir()
+        os.makedirs(output_dir, exist_ok=True)
+        # Only one job's artifacts are kept, as in the diagnose flow.
+        _cleanup_all_healthcheck_files(output_dir, exclude_job_id=job_id)
+        _save_healthcheck_job_metadata(CURRENT_HEALTHCHECK_JOB, output_dir)
+
+    worker = threading.Thread(
+        target=_run_healthcheck_worker,
+        args=(job_id, auth_header, is_ha_mode, ha_ip_list, deployment,
+              target_version, manifest_url),
+        daemon=True,
+    )
+    worker.start()
+
+    logger.info(
+        f"Health check job {job_id} started (HA mode: {is_ha_mode})",
+        extra={"node": utils.NODE_IP},
+    )
+    return {
+        "job_id": job_id,
+        "status": "running",
+        "message": "Health check started",
+        "is_ha_mode": is_ha_mode,
+    }, 202
+
+
+@SimpleAPIServer.route("/healthcheck-status", methods=["GET"], scopes=[ADMIN_ROLE])
+def healthcheck_status(handler):
+    """Status of the current or last health check job."""
+    global CURRENT_HEALTHCHECK_JOB
+
+    success, error_msg = load_environment_from_multiple_sources(handler)
+    if not success:
+        return _send_json_error_response(
+            handler, f"Error loading environment: {error_msg}", 500)
+
+    with _healthcheck_job_lock:
+        if CURRENT_HEALTHCHECK_JOB:
+            # Refresh from disk so a job driven by another HA node is current.
+            job_id = CURRENT_HEALTHCHECK_JOB.get("job_id")
+            refreshed = _load_healthcheck_job_metadata(job_id)
+            if refreshed:
+                CURRENT_HEALTHCHECK_JOB = refreshed
+        else:
+            # Nothing in memory: this server may have restarted since the run.
+            _recover_healthcheck_job_state()
+
+        if not CURRENT_HEALTHCHECK_JOB:
+            return {"status": "not_found", "message": "No health check has been run"}, 200
+
+        job = CURRENT_HEALTHCHECK_JOB
+        response = {
+            "job_id": job.get("job_id"),
+            "status": job.get("status"),
+            "message": job.get("message"),
+            "deployment": job.get("deployment"),
+            "target_version": job.get("target_version"),
+        }
+        if job.get("status") == "completed":
+            response["summary"] = job.get("summary")
+            response["formats"] = ["json"] + (["html"] if job.get("html_path") else [])
+        if job.get("error"):
+            response["error"] = job["error"]
+        return response, 200
+
+
+@SimpleAPIServer.route("/healthcheck-download", methods=["GET"], scopes=[ADMIN_ROLE])
+def healthcheck_download(handler):
+    """Download the merged report: ?format=html (default) or ?format=json."""
+    global CURRENT_HEALTHCHECK_JOB
+
+    success, error_msg = load_environment_from_multiple_sources(handler)
+    if not success:
+        return _send_json_error_response(
+            handler, f"Error loading environment: {error_msg}", 500)
+
+    query_params = parse_qs(urlparse(handler.path).query)
+    fmt = (query_params.get("format") or ["html"])[0]
+
+    with _healthcheck_job_lock:
+        job = CURRENT_HEALTHCHECK_JOB
+        if job and job.get("job_id"):
+            refreshed = _load_healthcheck_job_metadata(job["job_id"])
+            if refreshed:
+                job = CURRENT_HEALTHCHECK_JOB = refreshed
+        elif not job:
+            job = _recover_healthcheck_job_state()
+
+    if not job or job.get("status") != "completed":
+        return _send_json_error_response(
+            handler, "No completed health check report is available", 404)
+
+    path = job.get("html_path") if fmt == "html" else job.get("json_path")
+    if not path or not os.path.exists(path):
+        return _send_json_error_response(
+            handler, f"Report is not available in {fmt} format", 404)
+
+    content_type = "text/html" if fmt == "html" else "application/json"
+    try:
+        with open(path, "rb") as handle:
+            content = handle.read()
+    except OSError as e:
+        return _send_json_error_response(handler, f"Could not read report: {e}", 500)
+
+    handler.send_response(200)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header(
+        "Content-Disposition",
+        f'attachment; filename="{os.path.basename(path)}"')
+    handler.send_header("Content-Length", str(len(content)))
+    handler.end_headers()
+    handler.wfile.write(content)
+    return None
+
+
+@SimpleAPIServer.route("/healthcheck-versions", methods=["GET"], scopes=[ADMIN_ROLE])
+def healthcheck_versions(handler):
+    """Target CE versions the check definitions cover, for the dialog's
+    version dropdown. Empty only on a fetch/parse failure (`error` is set)."""
+    success, error_msg = load_environment_from_multiple_sources(handler)
+    if not success:
+        return _send_json_error_response(
+            handler, f"Error loading environment: {error_msg}", 500)
+
+    params = parse_qs(urlparse(handler.path).query)
+    manifest_url = (params.get("manifest_url") or [None])[0]
+
+    command = f"{HEALTHCHECK_INVOCATION} --list-versions"
+    if manifest_url:
+        command = f"{command} --manifest-url {shlex.quote(str(manifest_url))}"
+
+    stdout_chunks = []
+    return_code = 0
+    try:
+        for message in execute_command(command, shell=True):
+            if message.get("type") == "stdout":
+                stdout_chunks.append(message.get("message", ""))
+            elif message.get("type") == "returncode":
+                return_code = message.get("code", 0)
+    except Exception as e:
+        logger.error(f"Could not list health check versions: {e}",
+                     extra={"node": utils.NODE_IP})
+        return {"versions": [], "default": None,
+                "error": str(e)}, 200
+
+    raw = "".join(stdout_chunks).strip()
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        logger.warning(
+            "Health check --list-versions produced no readable output",
+            extra={"node": utils.NODE_IP})
+        return {"versions": [], "default": None}, 200
+
+    if return_code != 0 and not payload.get("versions"):
+        # Not fatal: the UI falls back to free text.
+        return {"versions": [], "default": payload.get("default"),
+                "error": payload.get("error")}, 200
+    return payload, 200
+
+
+@SimpleAPIServer.route("/healthcheck-results", methods=["GET"], scopes=[ADMIN_ROLE])
+def healthcheck_results(handler):
+    """Full per-check results of the last completed run.
+
+    The polled status endpoint deliberately returns counts only; this returns
+    every check with its name, level and remedy so the UI can render an
+    expandable per-node breakdown without re-downloading the report file.
+    """
+    global CURRENT_HEALTHCHECK_JOB
+
+    success, error_msg = load_environment_from_multiple_sources(handler)
+    if not success:
+        return _send_json_error_response(
+            handler, f"Error loading environment: {error_msg}", 500)
+
+    with _healthcheck_job_lock:
+        job = CURRENT_HEALTHCHECK_JOB
+        if job and job.get("job_id"):
+            refreshed = _load_healthcheck_job_metadata(job["job_id"])
+            if refreshed:
+                job = CURRENT_HEALTHCHECK_JOB = refreshed
+        elif not job:
+            job = _recover_healthcheck_job_state()
+
+    if not job or job.get("status") != "completed":
+        return _send_json_error_response(
+            handler, "No completed health check report is available", 404)
+
+    json_path = job.get("json_path")
+    if not json_path or not os.path.exists(json_path):
+        return _send_json_error_response(
+            handler, "The health check report file is no longer available", 404)
+
+    try:
+        with open(json_path) as handle:
+            document = json.load(handle)
+    except (OSError, ValueError) as e:
+        return _send_json_error_response(
+            handler, f"Could not read the health check report: {e}", 500)
+
+    # Trim to what a results view needs. The full facts blob is large and is
+    # only useful in the downloadable report, so it is deliberately omitted.
+    nodes = []
+    for entry in document.get("nodes") or []:
+        if entry.get("unreachable"):
+            nodes.append({
+                "node": entry.get("node"),
+                "label": entry.get("label"),
+                "reachable": False,
+                "error": entry.get("error"),
+                "results": [],
+            })
+            continue
+        payload = entry.get("payload") or {}
+        nodes.append({
+            "node": entry.get("node"),
+            "label": entry.get("label"),
+            "reachable": True,
+            "summary": payload.get("summary"),
+            "meta": payload.get("meta"),
+            "results": [
+                {
+                    "id": r.get("id"),
+                    "label": r.get("label"),
+                    "level": r.get("level"),
+                    "type": r.get("type"),
+                    "category": r.get("category"),
+                    "remedy": r.get("remedy"),
+                    "actual": r.get("actual"),
+                    "expected": r.get("expected"),
+                }
+                for r in payload.get("results") or []
+            ],
+        })
+
+    return {
+        "job_id": document.get("job_id"),
+        "summary": document.get("summary"),
+        "nodes": nodes,
+    }, 200
+
+
+@SimpleAPIServer.route("/run-healthcheck-node", methods=["POST"], scopes=[ADMIN_ROLE])
+def run_healthcheck_node(handler):
+    """Run the health check on this node only and return its JSON report.
+
+    Node-to-node communication in HA mode; not called by the UI directly.
+    """
+    logger.info(
+        "Starting node-only health check (internal API)",
+        extra={"node": utils.NODE_IP},
+    )
+
+    success, error_msg = load_environment_from_multiple_sources(handler)
+    if not success:
+        return _send_json_error_response(
+            handler, f"Error loading environment: {error_msg}", 500)
+
+    body = _read_json_body(handler)
+
+    # Same validation as the UI-facing route -- "internal" isn't a security
+    # boundary; this reaches the same shell command builder.
+    deployment = body.get("deployment") or "HA"
+    target_version = body.get("target_version")
+    param_error = _validate_healthcheck_params(deployment, target_version)
+    if param_error:
+        return _send_json_error_response(handler, param_error, 400)
+
+    ok, result = _run_local_healthcheck(
+        deployment, target_version, body.get("manifest_url"))
+    if not ok:
+        return _send_json_error_response(handler, result, 500)
+    return result, 200
 
 
 if __name__ == "__main__":
