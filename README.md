@@ -15,16 +15,13 @@ Full documentation can be found here: [Netskope Cloud Exchange](https://docs.net
 1.  Clone repository to volume with requisite 20 GB of storage<br>
     a. `mkdir netskope`<br>
     b. `cd netskope`<br>
-    c. `git clone https://github.com/netskopeoss/ta_cloud_exchange`<br>
-    Note: To use the beta branch use. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
-2. Checkout the Desired Version.
-  Before proceeding, checkout the desired version of the repository. For example, to checkout version 7.0.0-beta:<br>
-    a. `git checkout v7.0.0-beta`<br>
-3.  Execute the setup script:<br>
+    c. `git clone -b beta https://github.com/netskopeoss/ta_cloud_exchange`<br>
+    d. `cd ta_cloud_exchange`<br>
+2.  Execute the setup script:<br>
     a. `sudo ./setup`<br>
-4.  Launch Cloud Exchange<br>
+3.  Launch Cloud Exchange<br>
     a. `sudo ./start`<br>
-5.  Open Browser to `http(s)://<host ip address>`<br>
+4.  Open Browser to `http(s)://<host ip address>`<br>
 
 Note: If you want to add your SSL certificate, you can add them to the `ta_cloud_exchange/data/ssl_certs` directory. The name of the certificate file should be `cte_cert.crt` and `cte_cert_key.key`<br>
 
