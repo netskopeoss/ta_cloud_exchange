@@ -9,19 +9,7 @@ SLEEP=3
 DB_VERSION_ENV_FILE_LOCATION="./.env.ceversion"
 VENV_DIR=".cevenv"
 ACTIVATE_SCRIPT_PATH="${VENV_DIR}/bin/activate"
-
-if [ -n "${HA_IP_LIST}" ]; then
-    # Check if virtual environment already exists
-    if [ -d "${VENV_DIR}" ] && [ -f "${ACTIVATE_SCRIPT_PATH}" ]; then
-        echo "Virtual environment '$VENV_DIR' already exists."
-        echo "Using existing virtual environment."
-        echo "${ACTIVATE_SCRIPT_PATH}"
-        . "${ACTIVATE_SCRIPT_PATH}"
-    else
-        echo "Virtual environment '${VENV_DIR}' or '${ACTIVATE_SCRIPT_PATH}' does not exist, Please run setup first."
-        exit 1
-    fi
-fi
+VENV_PYTHON="${VENV_DIR}/bin/python"
 
 if [ -n "$HA_NFS_DATA_DIRECTORY" ]; then
     mounted=false
@@ -90,6 +78,48 @@ else
 fi
 
 . ${ENV_FILE}
+
+# The management server prefers the interpreter of the virtual environment that
+# the setup script created. This service is started by systemd with a minimal
+# PATH that contains neither the virtual environment nor any interpreter the
+# operator selected for this directory, so resolving python3 through PATH picks
+# the system interpreter, which can be a different (and unsupported) version
+# than the one the virtual environment was built with.
+#
+# When the virtual environment is missing we fall back to the system python3
+# rather than exiting. Exiting here makes systemd restart the unit in a loop,
+# and because the GlusterFS FUSE mount established above lives in this unit's
+# cgroup, every one of those restarts tears the mount back down. An upgrade
+# that then runs ./setup can observe /opt/shared/data unmounted and re-provision
+# the volume. Staying up keeps the mount alive until setup rebuilds the venv.
+#
+# Caveat: under the fallback the venv is never activated, so its interpreter is
+# not placed first on PATH. Child processes that resolve python3 from PATH --
+# notably `./setup`, spawned by the management server via its `#!/usr/bin/env
+# python3` shebang -- will use the system interpreter, which may lack the
+# packages setup requires (python-dotenv, pymongo). Run setup from a shell to
+# rebuild the virtual environment as soon as possible.
+#
+# Resolved after ENV_FILE is sourced so that no env file can override PATH
+# afterwards.
+if [ -f "${ACTIVATE_SCRIPT_PATH}" ] && [ -x "${VENV_PYTHON}" ]; then
+    echo "Using virtual environment '${VENV_DIR}'."
+    echo "Interpreter: ${VENV_PYTHON} ($("${VENV_PYTHON}" --version 2>&1))"
+    # Activating it additionally puts that interpreter first on PATH, which the
+    # child processes of the management server depend on: ./setup resolves
+    # python3 through PATH from its shebang.
+    . "${ACTIVATE_SCRIPT_PATH}"
+    SERVER_PYTHON="${VENV_PYTHON}"
+else
+    SERVER_PYTHON="$(command -v python3 || true)"
+    if [ -z "${SERVER_PYTHON}" ]; then
+        echo "Virtual environment '${VENV_DIR}' is missing or incomplete ('${ACTIVATE_SCRIPT_PATH}' or '${VENV_PYTHON}' not found) and no system python3 was found on PATH. Please run setup first."
+        exit 1
+    fi
+    echo "Virtual environment '${VENV_DIR}' is missing or incomplete ('${ACTIVATE_SCRIPT_PATH}' or '${VENV_PYTHON}' not found)."
+    echo "Falling back to system interpreter: ${SERVER_PYTHON} ($("${SERVER_PYTHON}" --version 2>&1)). The GlusterFS mount stays available, but please run setup to rebuild '${VENV_DIR}'."
+fi
+
 set +a
 
-python3 data/management_server/management_server.py
+"${SERVER_PYTHON}" data/management_server/management_server.py
