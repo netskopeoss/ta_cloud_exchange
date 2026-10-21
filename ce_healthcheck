@@ -1843,7 +1843,7 @@ def _check_port_free(entry, facts, context):
             entry.get("id"), Level.WARN,
             _message(entry, "{0} container is already running".format(
                 _OWNER_LABELS.get(owner, owner))),
-            actual=None, expected=None)
+            actual=None, expected=None, remedy=entry.get("remedy"))
 
     return make_result(entry.get("id"), Level.FAIL,
                        _message(entry, "port {0} is already in use".format(port)),
@@ -2145,7 +2145,8 @@ def run_all(entries, facts, context):
 # ============================================================================
 
 MANIFEST_URL = (
-    "https://raw.githubusercontent.com/netskopeoss/ta_cloud_exchange/refs/heads/beta/checks_manifest.json"
+    "https://raw.githubusercontent.com/netskopeoss/ta_cloud_exchange/"
+    "refs/heads/beta/checks_manifest.json"
 )
 
 # The fetched manifest drives every command/probe this script runs, as

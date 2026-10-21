@@ -32,6 +32,7 @@ import io
 import string
 from data.management_server import utils
 from data.management_server.utils import (
+    DEPLOYMENT_DIRECTORY,
     RECOMMENDED_HOST_OS,
     AVAILABLE_INPUTS,
     RECOMMENDED_HOST_OS_VERSION,
@@ -160,12 +161,12 @@ DEFAULT_INPUTS = {
     "ENV_FILE": {"default": "./.env", "skip": True, "help": ""},
 }
 LATEST_TAG_AND_VERSION = {
-    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core7-7.0.0-beta",
-    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui7-7.0.0-beta",
-    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo7-7.0.0-beta-8.3.4",
-    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq7-7.0.0-beta-4.3.2",
+    "CORE_TAG": "netskopetechnicalalliances/cloudexchange:core7-7.0.0",
+    "UI_TAG": "netskopetechnicalalliances/cloudexchange:ui7-7.0.0",
+    "MONGO_TAG": "netskopetechnicalalliances/cloudexchange:mongo7-7.0.0-8.3.4",
+    "RABBITMQ_TAG": "netskopetechnicalalliances/cloudexchange:rabbitmq7-7.0.0-4.3.2",
     "BETA_OPT_IN": "No",
-    "INSTALL_VERSION": "7.0.0-beta.1",
+    "INSTALL_VERSION": "7.0.0",
 }
 CHECKS = {}
 MIN_CPU = 8
@@ -206,6 +207,8 @@ CE_PROFILING = {
 }
 MIN_DISK_BYTES = 0.90 * 80 * 1024**3  # 90% of 80 GB
 MIN_FREE_DISK_BYTES = 20 * 1024**3
+# Advisory only (support recommendation): never fails setup.
+MIN_VAR_FREE_DISK_BYTES = 20 * 1024**3
 MIN_OPENSSL_VERSION = "1.1.1"
 
 N = 5
@@ -1159,11 +1162,13 @@ def check_machine_specs():
     free_space = None
     total_space = None
     try:
-        # Get the path of the current file
-        current_file_path = __file__
-        # Get the directory of the current file
-        current_dir = os.path.dirname(current_file_path) or os.getcwd()
-        disk_stats = shutil.disk_usage(current_dir)
+        # Same deployment directory the management server sizes its dashboard numbers
+        # against, so the prerequisite check and the Disk Utilization chart can never
+        # disagree about which filesystem they are talking about. The local
+        # `os.path.dirname(__file__) or os.getcwd()` this replaces picked the same
+        # filesystem in practice, but resolved to a relative path ("." for `./setup`)
+        # whose meaning depended on the process cwd; DEPLOYMENT_DIRECTORY is absolute.
+        disk_stats = shutil.disk_usage(DEPLOYMENT_DIRECTORY)
         free_space = disk_stats.free
         total_space = disk_stats.total
         disk_space_check_pass = False
@@ -1190,6 +1195,22 @@ def check_machine_specs():
         # print(e)
         print_warning(f"Could not verify Disk information of the machine")
         CHECKS["Disk Space Check"] = Status.NOT_VERIFIED
+
+    # Advisory free-space check for /var. Container images and logs live
+    # there, and /var can be its own disk. It only warns: it is deliberately
+    # not recorded in CHECKS, so it cannot fail setup or change the sizing
+    # result.
+    try:
+        var_free_space = shutil.disk_usage("/var").free
+        if var_free_space < MIN_VAR_FREE_DISK_BYTES:
+            print_warning(
+                f"Free disk under /var is {round(var_free_space / 1024**3, 1)} GB, "
+                f"below the recommended {MIN_VAR_FREE_DISK_BYTES // 1024**3} GB. "
+                "Container images and logs live under /var; free space there or "
+                "grow the filesystem."
+            )
+    except Exception:
+        print_warning("Could not verify free disk space under /var")
 
     matched = not (
         Status.FAIL
@@ -3406,6 +3427,11 @@ def run():
             take_env_backup(secret_location.strip(), ".env.key.backup")
         check_and_apply_rabbitmq_flags()
         remove_passwords_from_config()  # Remove only on successfull setup.
+        # Interim measure, see configure_needrestart_exclusion. location is set on
+        # secondary HA nodes, is_ha on the primary.
+        configure_needrestart_exclusion(
+            [CLOUD_EXCHANGE_LINUX_SERVICE_NAME, "glusterd"], is_ha_node=bool(location or is_ha)
+        )
         message = "\nSetup completed successfully..."
         print(f"{message}")
 
@@ -3465,6 +3491,52 @@ WantedBy=multi-user.target
         print(f"Management service {service_name} has been installed and started successfully.")
     except Exception as e:
         print(f"Error setting up the Management service. Error: {e}")
+
+
+NEEDRESTART_EXCLUSION_FILE = "/etc/needrestart/conf.d/99-cloudexchange.conf"
+
+
+def configure_needrestart_exclusion(service_names, is_ha_node):
+    """Leave restarts of the HA storage services to the operator on HA nodes.
+
+    On HA nodes, the management service manages the mount of the shared
+    GlusterFS volume used by the containers, and glusterd serves this node's
+    brick of the replicated volume. These services are best restarted one node
+    at a time, during a maintenance window. needrestart can restart services
+    automatically after library upgrades (for example from unattended-upgrades),
+    so on HA nodes they are excluded from its automatic restarts; needrestart
+    still reports them as needing a restart. The exclusion is removed on
+    standalone nodes, and nothing is changed where needrestart is not installed.
+
+    Note: this is an interim measure. Once the shared volume is mounted through
+    its own systemd mount unit and the containers read their certificates from
+    node-local copies, restarting these services no longer affects running
+    containers. Remove this function and its call in run(), including the
+    glusterd entry, at that point.
+    """
+    if not os.path.isdir("/etc/needrestart"):
+        return
+    services = ", ".join(service_names)
+    try:
+        if is_ha_node:
+            content = (
+                "# Managed by Cloud Exchange setup. needrestart lists these services as\n"
+                "# needing a restart but does not restart them; restart them manually,\n"
+                "# one HA node at a time.\n"
+            ) + "".join(
+                f"$nrconf{{override_rc}}{{qr(^{re.escape(name)}\\.service$)}} = 0;\n"
+                for name in service_names
+            )
+            os.makedirs(os.path.dirname(NEEDRESTART_EXCLUSION_FILE), exist_ok=True)
+            with open(NEEDRESTART_EXCLUSION_FILE, "w") as f:
+                f.write(content)
+            os.chmod(NEEDRESTART_EXCLUSION_FILE, 0o644)
+            print(f"Excluded {services} services from automatic needrestart restarts.")
+        elif os.path.exists(NEEDRESTART_EXCLUSION_FILE):
+            os.remove(NEEDRESTART_EXCLUSION_FILE)
+            print(f"Removed the needrestart exclusion for {services} services.")
+    except OSError as e:
+        print_warning(f"Could not update the needrestart exclusion for {services} services. Error: {e}")
 
 
 def check_python_version():

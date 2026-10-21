@@ -59,6 +59,7 @@ from utils import (
     verify_start_create_volume,
     write_chunk,
     validate_network_address,
+    DEPLOYMENT_DIRECTORY,
     GLUSTERFS_BASE_PORT,
     GLUSTERFS_MAX_PORT,
     fetch_container_info,
@@ -93,6 +94,7 @@ JWT_ALGORITH = "HS256"
 JWT_ALGORITH_LIB_MAP = {"HS256": hashlib.sha256}
 DEFAULT_USER = "management"
 DIAGNOSE_OUTPUT_DIR_DEFAULT = "./data/diagnose_output"
+BYTES_PER_GB = 1024**3
 CURRENT_DIAGNOSE_JOB = None
 TLSV2_CIPHER_STRING = (
     "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384"
@@ -884,43 +886,46 @@ def get_memory_usage():
 
 def get_disk_usage():
     """
-    Get the disk usage of the system.
+    Get the disk usage of the filesystem Cloud Exchange is deployed on.
+
+    Everything Cloud Exchange writes -- the MongoDB data directory, the RabbitMQ spool,
+    plugins, repos and logs -- is bind-mounted from paths relative to the deployment
+    directory, so that filesystem is the one that decides whether CE runs out of space.
+    "/" was reported previously, which is misleading whenever CE is installed on a
+    separate mount (e.g. /opt or /data on its own volume).
 
     Returns:
         dict: A dictionary containing the disk usage of the system.
     """
-    line_index = 0
-    parts = []
-    for result in execute_command("df -h /", shell=True):
-        if result["type"] == "stdout":
-            if line_index == 0:
-                line_index += 1
-                continue
-            parts = re.split(r"\s+", result["message"])
-        elif result["type"] == "stderr":
-            logger.error(
-                f"Error encountered while disk space. {result['message']}",
-                extra={"node": utils.NODE_IP},
-            )
-        elif result["type"] == "returncode" and result["code"] != 0:
-            logger.error(
-                f"Error encountered while disk space. Process exited with {result['code']}.",
-                extra={"node": utils.NODE_IP},
-            )
     try:
-        return {
-            "total_GB": round(float(parts[1][:-1]), 2),
-            "used_GB": round(float(parts[2][:-1]), 2),
-            "available_GB": round(float(parts[3][:-1]), 2),
-            "percent_used": round(float(parts[4].rstrip("%")), 2),
-        }
+        usage = shutil.disk_usage(DEPLOYMENT_DIRECTORY)
     except Exception:
+        logger.error(
+            f"Error encountered while fetching disk space for {DEPLOYMENT_DIRECTORY}. "
+            f"{traceback.format_exc()}",
+            extra={"node": utils.NODE_IP},
+        )
         return {
             "total_GB": None,
             "used_GB": None,
             "available_GB": None,
             "percent_used": None,
         }
+
+    # shutil reports exact bytes, so the value is a true GB regardless of the size of the
+    # volume. Parsing `df -h` used to take the number and drop the unit, which reported a
+    # 1.8T volume as 1.8 GB and a 500M one as 500 GB.
+    #
+    # `used + free` (not `total`) is the denominator so the percentage keeps matching what
+    # `df` reports: both exclude the blocks reserved for root, which are counted in `total`
+    # but are available to neither.
+    usable = usage.used + usage.free
+    return {
+        "total_GB": round(usage.total / BYTES_PER_GB, 2),
+        "used_GB": round(usage.used / BYTES_PER_GB, 2),
+        "available_GB": round(usage.free / BYTES_PER_GB, 2),
+        "percent_used": round((usage.used / usable) * 100, 2) if usable else 0.0,
+    }
 
 
 def handle_http_errors(res):

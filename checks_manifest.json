@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "manifest_version": "2026.07.30",
+  "manifest_version": "2026.10.01",
   "default_version": "7.0.0",
   "docs": {
     "install": "https://docs.netskope.com/en/install-cloud-exchange",
@@ -182,72 +182,6 @@
             ],
             "os_id": [
               "ubuntu"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-cdn",
-          "type": "port_reachable",
-          "message": "Red Hat CDN",
-          "host": "cdn.redhat.com",
-          "port": 443,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-buildlogs",
-          "type": "http_reachable",
-          "message": "CentOS build logs",
-          "url": "https://buildlogs.centos.org",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-centos-cdn",
-          "type": "port_reachable",
-          "message": "CentOS CDN (GlusterFS packages)",
-          "host": "buildlogs.cdn.centos.org",
-          "port": 80,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-mongo-downloads",
-          "type": "http_reachable",
-          "message": "MongoDB downloads",
-          "url": "https://downloads.mongodb.com",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
             ]
           }
         },
@@ -792,72 +726,6 @@
             ],
             "os_id": [
               "ubuntu"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-cdn",
-          "type": "port_reachable",
-          "message": "Red Hat CDN",
-          "host": "cdn.redhat.com",
-          "port": 443,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-buildlogs",
-          "type": "http_reachable",
-          "message": "CentOS build logs",
-          "url": "https://buildlogs.centos.org",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-centos-cdn",
-          "type": "port_reachable",
-          "message": "CentOS CDN (GlusterFS packages)",
-          "host": "buildlogs.cdn.centos.org",
-          "port": 80,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-mongo-downloads",
-          "type": "http_reachable",
-          "message": "MongoDB downloads",
-          "url": "https://downloads.mongodb.com",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
             ]
           }
         },
@@ -1445,72 +1313,6 @@
           }
         },
         {
-          "id": "vm-rhel-cdn",
-          "type": "port_reachable",
-          "message": "Red Hat CDN",
-          "host": "cdn.redhat.com",
-          "port": 443,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-buildlogs",
-          "type": "http_reachable",
-          "message": "CentOS build logs",
-          "url": "https://buildlogs.centos.org",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-centos-cdn",
-          "type": "port_reachable",
-          "message": "CentOS CDN (GlusterFS packages)",
-          "host": "buildlogs.cdn.centos.org",
-          "port": 80,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-mongo-downloads",
-          "type": "http_reachable",
-          "message": "MongoDB downloads",
-          "url": "https://downloads.mongodb.com",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
           "id": "vm-docker-download",
           "type": "http_reachable",
           "message": "Docker package repository",
@@ -2032,40 +1834,6 @@
           }
         },
         {
-          "id": "vm-ubuntu-keyserver",
-          "type": "port_reachable",
-          "message": "Ubuntu keyserver",
-          "host": "keyserver.ubuntu.com",
-          "port": 80,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "ubuntu"
-            ]
-          }
-        },
-        {
-          "id": "vm-ubuntu-ppa",
-          "type": "port_reachable",
-          "message": "Launchpad PPA (GlusterFS packages)",
-          "host": "ppa.launchpad.net",
-          "port": 80,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "ubuntu"
-            ]
-          }
-        },
-        {
           "id": "vm-ubuntu-esm",
           "type": "http_reachable",
           "message": "Ubuntu ESM",
@@ -2078,72 +1846,6 @@
             ],
             "os_id": [
               "ubuntu"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-cdn",
-          "type": "port_reachable",
-          "message": "Red Hat CDN",
-          "host": "cdn.redhat.com",
-          "port": 443,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-buildlogs",
-          "type": "http_reachable",
-          "message": "CentOS build logs",
-          "url": "https://buildlogs.centos.org",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-centos-cdn",
-          "type": "port_reachable",
-          "message": "CentOS CDN (GlusterFS packages)",
-          "host": "buildlogs.cdn.centos.org",
-          "port": 80,
-          "timeout": 5,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
-            ]
-          }
-        },
-        {
-          "id": "vm-rhel-mongo-downloads",
-          "type": "http_reachable",
-          "message": "MongoDB downloads",
-          "url": "https://downloads.mongodb.com",
-          "timeout": 15,
-          "remedy": "CEasVM applies operating-system and package updates during an upgrade. Allow outbound access to this host, or the upgrade will fail part-way through installing packages.",
-          "applies_when": {
-            "is_vm": [
-              true
-            ],
-            "os_id": [
-              "rhel"
             ]
           }
         },
