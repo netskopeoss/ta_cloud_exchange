@@ -20,6 +20,18 @@ import traceback
 import json
 
 NODE_IP = ""
+# Absolute path of the Cloud Exchange deployment directory -- the one holding `setup`,
+# `docker-compose.yml` and `data/`. Everything Cloud Exchange writes (the MongoDB data
+# directory, the RabbitMQ spool, plugins, repos, logs) is bind-mounted from paths relative
+# to it, so the filesystem backing it is the one that decides whether CE runs out of space.
+# It is not necessarily the filesystem behind "/": CE is often installed on its own mount.
+#
+# This file lives at <deployment directory>/data/management_server/utils.py. Resolved from
+# __file__ rather than os.getcwd() so it stays correct no matter which directory the
+# importing script was launched from.
+DEPLOYMENT_DIRECTORY = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
 GLUSTERFS_BASE_PORT = 24009
 GLUSTERFS_MAX_PORT = 24029
 TOKEN_VALIDITY = 3600
