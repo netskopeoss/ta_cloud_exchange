@@ -1,30 +1,24 @@
 [
     {
-        "id": "BANNER_WARN_1001",
-        "message": "Cloud Exchange **v5.0.1** has reached End of Life on **January 31, 2026**, please upgrade to CE v6.0.1 and refer to [product life cycle](https://docs.netskope.com/en/about-cloud-exchange#block-a4ca387a-bc38-40ea-b4bc-fcb3d2ff37ba) for more details.",
-        "type": "banner_warn",
-        "ce_versions": "<5.1.0"
-    },
-    {
-        "id": "BANNER_WARN_1002",
-        "message": "Netskope has retired the **Transaction Event Streaming** solution (based on Google Pub/Sub Lite) on **December 31, 2025**, and transitioning to our next-generation log delivery platform: **Netskope Log Streaming**. This is based on Google's plan to deprecate Pub/Sub Lite. CE (from v5.1.2) supports Log Streaming workflow through the following plugins, [AWS LogStreaming Plugin for Log Shipper](https://docs.netskope.com/en/aws-logstreaming-plugin-for-log-shipper) and [Azure LogStreaming Plugin for Log Shipper](https://docs.netskope.com/en/azure-logstreaming-plugin-for-log-shipper). Please refer to [Netskope Product EOL/EOS Announcements - Netskope Knowledge Portal](https://docs.netskope.com/en/netskope-product-eol-announcements) for more details.",
+        "id": "BANNER_WARN_1005",
+        "message": "The following plugins have been deprecated: **CLS Azure Sentinel**, **CTE Illumio**, and **CLS AWS CloudTrail Lake**. Customers are advised to migrate to the recommended replacement plugins. Details can be found in the respective KB articles: [CLS Azure Sentinel](https://docs.netskope.com/en/cloud-exchange-kb-articles#microsoft-azure-sentinel-plugin-for-log-shipper-module-deprecation), [CTE Illumio](https://docs.netskope.com/en/cloud-exchange-kb-articles#illumio-plugin-for-threat-exchange-module-deprecation), and [CLS AWS CloudTrail Lake](https://docs.netskope.com/en/cloud-exchange-faqs#q--the-aws-cloudtrail-lake-plugin-has-been-deprecated-in-cloud-exchange--what-is-the-recommended-alternative-).",
         "type": "banner_warn"
     },
     {
-        "id": "BANNER_INFO_1003",
-        "message": "Cloud Exchange v6.1.0 is NOW GA, please refer to [community article](https://community.netskope.com/netskope-cloud-exchange-ce-67/ce-v6-1-0-ga-ce-plugins-8677) for details. We strongly recommend that customers **deploy, upgrade, or migrate to CE v6.1.0** to take advantage of the latest critical bug fixes and security updates, helping to strengthen the security posture of their digital ecosystem. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-6-1-0), [upgrade](https://docs.netskope.com/en/upgrade-cloud-exchange) and [migration](https://docs.netskope.com/en/migrate-cloud-exchange) documentation for more details.",
+        "id": "BANNER_INFO_1004",
+        "message": "Cloud Exchange v7.0.0 is NOW GA, please refer to [community article](https://community.netskope.com/netskope-cloud-exchange-ce-67/netskope-cloud-exchange-ce-v7-0-0-is-now-ga-9086) for details. We strongly recommend that customers **deploy, upgrade, or migrate to CE v7.0.0** to take advantage of the latest features, critical bug fixes and security updates, helping to strengthen the security posture of their digital ecosystem. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-7-0-0), [upgrade](https://docs.netskope.com/en/upgrade-cloud-exchange) and [migration](https://docs.netskope.com/en/migrate-cloud-exchange) documentation for more details.",
         "type": "banner_info",
-        "ce_versions": "<6.1.0"
+        "ce_versions": "<7.0.0"
     },
     {
-        "id": "BANNER_WARN_1003",
-        "message": "Cloud Exchange versions - **v5.1.0**, **v5.1.1**, and **v5.1.2** will reach its End of Life on **October 31, 2026**, please upgrade to latest versions and refer to [product life cycle](https://docs.netskope.com/en/about-cloud-exchange#block-a4ca387a-bc38-40ea-b4bc-fcb3d2ff37ba) for more details.",
+        "id": "BANNER_INFO_1005",
+        "message": "**Netskope DLPx** is NOW GA with Cloud Exchange v7.0.0, bringing **Exact Data Match (EDM)** and **Custom File Classifier (CFC)** workflows to Cloud Exchange. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-7-0-0), [upgrade guide](https://docs.netskope.com/en/upgrade-cloud-exchange), [EDM guide](https://docs.netskope.com/en/exact-data-match-module), [CFC guide](https://docs.netskope.com/en/custom-file-classification-module) and [sizing guidelines](https://docs.netskope.com/en/cloud-exchange-system-requirements#sizing-the-system-based-on-anticipated-usage-for-edm-and-cfc-modules) for more details.",
+        "type": "banner_info"
+    },
+    {
+        "id": "BANNER_WARN_1008",
+        "message": "Cloud Exchange versions **v5.0.1**, **v5.1.0**, **v5.1.1**, and **v5.1.2** have reached End of Life, please upgrade to the latest CE version and refer to [product life cycle](https://docs.netskope.com/en/about-cloud-exchange#block-a4ca387a-bc38-40ea-b4bc-fcb3d2ff37ba) for more details.",
         "type": "banner_warn",
         "ce_versions": "<6.0.0"
-    },
-    {
-        "id": "BANNER_WARN_1004",
-        "message": "Support for the **CLS Azure Sentinel** plugin will reach End of Life on **September 14, 2026**, due to the deprecation of the [Microsoft Data Collector API](https://learn.microsoft.com/en-us/previous-versions/azure/azure-monitor/logs/data-collector-api?tabs=powershell). Customers are advised to migrate to the CLS [Microsoft Azure Log Analytics](https://docs.netskope.com/en/microsoft-azure-log-analytics-plugin-for-log-shipper) plugin as a replacement. For more guidance, please refer to this [KB article](https://docs.netskope.com/en/cloud-exchange-kb-articles#microsoft-azure-sentinel-plugin-for-log-shipper-module-deprecation).",
-        "type": "banner_warn"
     }
 ]
