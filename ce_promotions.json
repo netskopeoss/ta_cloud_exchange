@@ -12,7 +12,7 @@
     },
     {
         "id": "BANNER_INFO_1005",
-        "message": "**Netskope DLPx** is NOW GA with Cloud Exchange v7.0.0, bringing **Exact Data Match (EDM)** and **Custom File Classifier (CFC)** workflows to Cloud Exchange. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-7-0-0), [upgrade guide](https://docs.netskope.com/en/upgrade-cloud-exchange), [EDM guide](https://docs.netskope.com/en/exact-data-match-module), [CFC guide](https://docs.netskope.com/en/custom-file-classification-module) and [sizing guidelines](https://docs.netskope.com/en/cloud-exchange-system-requirements#sizing-the-system-based-on-anticipated-usage-for-edm-and-cfc-modules) for more details.",
+        "message": "**Netskope DLPx** is NOW GA with Cloud Exchange v7.0.0, bringing **Exact Data Match (EDM)** and **Custom File Classifier (CFC)** workflows to Cloud Exchange. Please refer to the [release notes](https://docs.netskope.com/en/netskope-cloud-exchange-release-notes-version-7-0-0), [EDM guide](https://docs.netskope.com/en/exact-data-match-module), [CFC guide](https://docs.netskope.com/en/custom-file-classification-module) and [sizing guidelines](https://docs.netskope.com/en/cloud-exchange-system-requirements#sizing-the-system-based-on-anticipated-usage-for-edm-and-cfc-modules) for more details.",
         "type": "banner_info"
     },
     {
